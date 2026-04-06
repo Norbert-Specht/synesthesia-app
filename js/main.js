@@ -253,21 +253,41 @@ function drawFrame() {
 // AUDIO ANALYSIS — CONSTANTS
 // ================================
 
-// Minimum per-frame rise in bass energy required to trigger a beat.
-// The delta approach detects how sharply bass is rising each frame,
-// rather than comparing absolute level to a rolling average.
-// This works on dense/compressed mixes where bass is always high
-// and kicks only push it up by a small amount each frame.
-// Tune upward if false positives occur, downward if beats are missed.
-const BEAT_DELTA_THRESHOLD = 0.03;
+// --- Spectral Flux Onset Detection ---
+//
+// Spectral flux measures the total change in the frequency spectrum between
+// consecutive frames. Unlike the previous delta method (which only watched bass
+// energy for kick drums), spectral flux watches the entire spectrum simultaneously.
+// A kick, snare, guitar strum, piano attack, or brass hit all produce a sudden
+// increase across many frequency bins — that burst of change is the flux signal.
+//
+// Only positive changes are summed (Half-Wave Rectification / HWR). This makes
+// the detector sensitive to onsets (energy suddenly appearing) and insensitive
+// to releases (energy fading away), which is exactly what we want.
+//
+// A dynamic threshold — derived from the rolling median of recent flux values —
+// adapts to the energy level of the track. A quiet classical passage and a loud
+// electronic drop both get appropriate sensitivity without manual tuning per genre.
 
-// Minimum milliseconds between two consecutive beat triggers.
-// Prevents a single loud transient from firing multiple beat events.
-const BEAT_COOLDOWN_MS = 300;
+// Number of recent flux values kept in the rolling history buffer.
+// 43 frames ≈ 700ms at 60fps — enough history to compute a stable local median
+// without being so long that the threshold lags badly during abrupt energy shifts.
+const FLUX_HISTORY_SIZE = 43;
 
-// Per-frame decay factor applied to beatIntensity between beats.
-// 0.88 means intensity halves in roughly 5–6 frames (~90ms at 60fps).
-const BEAT_DECAY = 0.88;
+// Onset fires when flux exceeds (median of recent flux values × this multiplier).
+// 1.5 means an onset requires a flux spike 50% above the recent baseline.
+// Tune upward to reduce false positives on sustained/legato music;
+// tune downward to catch quieter or more subtle onsets.
+const FLUX_THRESHOLD_MULTIPLIER = 1.5;
+
+// Minimum milliseconds between two consecutive onset triggers.
+// 100ms = max ~10 onsets/second, which covers fast 16th-note passages at 150bpm.
+// Prevents a single loud transient from double-firing across adjacent frames.
+const ONSET_COOLDOWN_MS = 100;
+
+// Per-frame decay factor applied to beatIntensity after each onset.
+// 0.88 means intensity halves in roughly 5 frames (~83ms at 60fps).
+const ONSET_DECAY = 0.88;
 
 // Idle fallback values used when no audio is playing.
 // Non-zero so the aurora continues its ambient animation (not frozen).
@@ -295,11 +315,18 @@ let sourceNode = null;   // MediaElementSourceNode wrapping the <audio> element
 let freqData = null;   // Uint8Array[1024] — frequency magnitudes, 0–255 per bin
 let timeData = null;   // Uint8Array[2048] — raw waveform samples, 0–255 (128 = silence)
 
-// Bass value from the previous frame — used to calculate per-frame delta.
-let previousBass = 0;
+// Snapshot of freqData from the previous frame — required by spectral flux.
+// Flux is computed as the difference between this frame and the last.
+// Allocated alongside freqData in initAudioContext() once fftSize is known.
+let previousFreqData = null;   // Uint8Array[1024]
 
-// Timestamp of the last triggered beat (ms, from performance.now()).
-let lastBeatTime = 0;
+// Rolling buffer of recent flux values used to compute the dynamic threshold.
+// Acts as a short-term memory of how much spectral change is "normal" for this
+// passage of music, so the onset threshold adapts to the track's energy level.
+const fluxHistory = [];
+
+// Timestamp of the last triggered onset (ms, from performance.now()).
+let lastOnsetTime = 0;
 
 // Internal beat intensity value that persists and decays across frames.
 // Exposed via audioData.beatIntensity each frame.
@@ -352,9 +379,12 @@ function initAudioContext() {
 
   // --- Allocate analysis buffers ---
   // frequencyBinCount = fftSize / 2 = 1024
-  freqData = new Uint8Array(analyser.frequencyBinCount);
+  freqData         = new Uint8Array(analyser.frequencyBinCount);
+  // previousFreqData mirrors freqData — holds last frame's spectrum for flux calculation.
+  // Initialised to all zeros; the first frame produces no onset (flux vs. silence).
+  previousFreqData = new Uint8Array(analyser.frequencyBinCount);
   // timeDomainData length = fftSize = 2048
-  timeData = new Uint8Array(analyser.fftSize);
+  timeData         = new Uint8Array(analyser.fftSize);
 }
 
 
@@ -409,43 +439,75 @@ function getRMSAmplitude(data) {
 
 
 // ================================
-// AUDIO ANALYSIS — BEAT DETECTION
+// AUDIO ANALYSIS — ONSET DETECTION (Spectral Flux)
 //
-// Delta (rate-of-change) method:
-//   1. Calculate how much bass energy rose since the previous frame.
-//   2. A beat fires when that rise exceeds BEAT_DELTA_THRESHOLD
-//      AND the cooldown since the last beat has elapsed.
-//   3. beatIntensity spikes on each beat then decays by BEAT_DECAY per frame.
+// Spectral flux = the sum of positive bin-level increases across the full
+// frequency spectrum between the current frame and the previous frame.
 //
-// Why delta instead of rolling average:
-//   On dense/compressed mixes (e.g. trip-hop, electronic) the bass bins
-//   are nearly maxed out the entire time. The absolute level never drops
-//   far enough for a rolling-average comparison to detect spikes.
-//   A kick drum always creates a sharp *upward slope* in bass energy,
-//   even when the baseline is already high — that slope is what we detect.
+//   flux = Σ max(0, freqData[i] - previousFreqData[i])   for all bins i
+//
+// Summing only positive differences (Half-Wave Rectification) makes the
+// detector onset-sensitive — it fires when energy suddenly appears across
+// the spectrum — and ignores releases, where energy fades away.
+//
+// Why spectral flux instead of the previous delta/bass method:
+//   The old approach watched only the bass band for upward spikes, which
+//   effectively detected kick drums and little else. It failed entirely on
+//   classical, jazz, acoustic, and ambient music where the rhythmic pulse
+//   lives in mid or high frequencies, or where there is no sharp transient.
+//   Spectral flux detects any musical onset — kick, snare, guitar strum,
+//   piano attack, brass hit — regardless of which band carries the energy.
+//
+// Dynamic threshold:
+//   Rather than a fixed flux threshold, we compare flux to the rolling median
+//   of recent flux values. This adapts to the track's overall energy level:
+//   a quiet piano passage and a dense electronic drop both trigger at the
+//   right sensitivity without manual per-genre tuning.
 // ================================
 
-function detectBeat(currentBass) {
+function detectOnset(currentFreqData) {
   const now = performance.now();
 
-  // How much did bass rise since the last frame?
-  // Only positive values matter — we detect upward spikes, not drops.
-  const delta = currentBass - previousBass;
-  previousBass = currentBass;
+  // --- Step 1: Compute spectral flux ---
+  // Sum the positive bin-level differences between this frame and the last.
+  // Raw bin values are 0–255; dividing by (binCount × 255) normalises to 0.0–1.0.
+  let rawFlux = 0;
+  for (let i = 0; i < currentFreqData.length; i++) {
+    rawFlux += Math.max(0, currentFreqData[i] - previousFreqData[i]);
+  }
+  const flux = rawFlux / (currentFreqData.length * 255);
 
-  // Beat condition: bass rising sharply AND cooldown has passed
+  // Update previousFreqData for next frame.
+  // set() copies the values — we can't just assign (both vars would point to
+  // the same buffer and previousFreqData would always equal currentFreqData).
+  previousFreqData.set(currentFreqData);
+
+  // --- Step 2: Maintain rolling flux history ---
+  // Keep only the most recent FLUX_HISTORY_SIZE values.
+  fluxHistory.push(flux);
+  if (fluxHistory.length > FLUX_HISTORY_SIZE) fluxHistory.shift();
+
+  // --- Step 3: Compute dynamic threshold from rolling median ---
+  // The median is more robust than the mean — a single loud transient won't
+  // skew the baseline and suppress detection of the next onset.
+  const sorted = [...fluxHistory].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const dynamicThreshold = median * FLUX_THRESHOLD_MULTIPLIER;
+
+  // --- Step 4: Fire onset if flux exceeds threshold and cooldown has elapsed ---
   const isBeat =
-    delta > BEAT_DELTA_THRESHOLD &&
-    (now - lastBeatTime) > BEAT_COOLDOWN_MS;
+    flux > dynamicThreshold &&
+    (now - lastOnsetTime) > ONSET_COOLDOWN_MS;
 
   if (isBeat) {
-    lastBeatTime = now;
-    // beatIntensity: normalised to [0,1]. A delta of 3× threshold = full intensity.
-    beatIntensityInternal = Math.min(1.0, delta / (BEAT_DELTA_THRESHOLD * 3));
+    lastOnsetTime = now;
+    // Intensity: how far above the threshold did flux land?
+    // At threshold → 0; at 2× threshold → 0.5; at 3× threshold → ~0.67; clamped at 1.0.
+    beatIntensityInternal = Math.min(1.0, (flux - dynamicThreshold) / dynamicThreshold);
   }
 
-  // Decay intensity toward zero each frame regardless of beat state
-  beatIntensityInternal *= BEAT_DECAY;
+  // Decay intensity toward zero each frame regardless of onset state
+  beatIntensityInternal *= ONSET_DECAY;
 
   return { isBeat, beatIntensity: beatIntensityInternal };
 }
@@ -466,7 +528,7 @@ function updateAudioData() {
   // No analyser yet (first file not loaded), or audio is paused — use idle values.
   // Let beatIntensity continue to decay so a beat flash doesn't freeze on pause.
   if (!analyser || audioPlayer.paused) {
-    beatIntensityInternal *= BEAT_DECAY;
+    beatIntensityInternal *= ONSET_DECAY;
     audioData = {
       ...IDLE_AUDIO_DATA,
       beatIntensity: beatIntensityInternal,
@@ -488,8 +550,9 @@ function updateAudioData() {
   // Overall loudness via RMS
   const amplitude = getRMSAmplitude(timeData);
 
-  // Beat detection via per-frame delta
-  const { isBeat, beatIntensity } = detectBeat(bass);
+  // Onset detection via spectral flux — passes the full frequency array,
+  // not just a single band value, so all instrument attacks are captured.
+  const { isBeat, beatIntensity } = detectOnset(freqData);
 
   // Write all values into the shared audioData object.
   // The aurora renderer reads this object next frame (Milestone 3 will act on it).
