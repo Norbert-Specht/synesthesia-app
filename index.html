@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synesthesia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <canvas id="aurora-canvas"></canvas>
+
+  <!-- Landing overlay — visible before a track is loaded -->
+  <div id="landing">
+    <div class="landing-content">
+      <h1 class="app-title">Synesthesia</h1>
+      <p class="app-tagline">
+        A music visualizer inspired by chromesthesia —<br>
+        the neurological phenomenon where sound becomes color.
+      </p>
+      <label class="upload-btn" for="audio-upload">
+        <span>Choose a track</span>
+        <input
+          type="file"
+          id="audio-upload"
+          accept=".mp3,.wav,.ogg,.aiff,.aif,.flac,.m4a,.aac"
+        >
+      </label>
+      <p class="upload-hint">mp3 &middot; wav &middot; ogg &middot; aiff &middot; flac &middot; m4a</p>
+    </div>
+  </div>
+
+  <!-- Controls bar — always visible once a track is loaded -->
+  <div id="controls" class="hidden">
+    <div class="controls-inner">
+
+      <div class="controls-left">
+        <span id="track-name">No track loaded</span>
+      </div>
+
+      <div class="controls-center">
+        <button id="play-pause-btn" disabled aria-label="Play/Pause">
+          <!-- Play icon -->
+          <svg id="icon-play" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
+          <!-- Pause icon -->
+          <svg id="icon-pause" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="22" height="22" class="hidden">
+            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="controls-right">
+        <label class="change-track-btn" for="audio-upload-controls">
+          Change track
+          <input
+            type="file"
+            id="audio-upload-controls"
+            accept=".mp3,.wav,.ogg,.aiff,.aif,.flac,.m4a,.aac"
+          >
+        </label>
+      </div>
+
+    </div>
+  </div>
+
+  <audio id="audio-player"></audio>
+  <script src="js/main.js"></script>
+
+</body>
+</html>
