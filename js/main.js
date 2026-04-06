@@ -4,10 +4,12 @@
 //
 // Milestone 1: Canvas setup, aurora animation, audio upload, play/pause.
 // Milestone 2: Web Audio API integration — real-time frequency extraction,
-//              amplitude tracking, beat detection. All analysis values are
-//              collected into a single `audioData` object that the aurora
-//              render loop reads each frame. The visuals are not yet driven
-//              by audioData — that wiring happens in Milestone 3.
+//              amplitude tracking, spectral flux onset detection. All values
+//              collected into a single `audioData` object each frame.
+// Milestone 3: audioData connected to aurora visuals via a smoothed
+//              visualState object. The aurora now responds to music in
+//              real-time — thickness, speed, opacity, and wave height are
+//              all modulated by frequency band energy and beat intensity.
 //
 // Architecture overview:
 //   loadAudioFile()
@@ -15,8 +17,9 @@
 //     → audioPlayer.play()
 //
 //   drawFrame()  [requestAnimationFrame loop]
-//     → updateAudioData()           (reads analyser, writes audioData)
-//     → drawAuroraLayer() × 5      (reads audioData — passive in M2)
+//     → updateAudioData()           (reads analyser → writes audioData)
+//     → updateVisualState()         (lerps audioData → visualState, smoothed)
+//     → drawAuroraLayer() × 5      (reads visualState — live visual response)
 // =============================================================================
 
 
@@ -50,6 +53,10 @@ window.addEventListener('resize', resizeCanvas);
 //
 // All position/size values are fractions of canvas dimensions so the
 // aurora scales correctly on any screen size.
+//
+// `zone` assigns each layer to a frequency region ('high', 'mid', 'low').
+// drawAuroraLayer() reads the matching visualState energy value to modulate
+// that layer's thickness, speed, opacity, and wave height in real-time.
 // ================================
 
 const AURORA_LAYERS = [
@@ -64,6 +71,7 @@ const AURORA_LAYERS = [
     color:       [0, 255, 128],    // vivid green — high zone (melody / treble)
     opacity:     0.60,
     timeOffset:  0.0,    // phase offset so layers don't all move in sync
+    zone:        'high', // driven by visualState.high — reacts to treble energy
   },
   {
     yFraction:   0.28,
@@ -76,6 +84,7 @@ const AURORA_LAYERS = [
     color:       [0, 220, 255],    // cyan — upper-mid zone
     opacity:     0.52,
     timeOffset:  2.1,
+    zone:        'high', // second high-zone layer — adds depth to treble response
   },
   {
     yFraction:   0.44,
@@ -88,6 +97,7 @@ const AURORA_LAYERS = [
     color:       [160, 80, 255],   // purple — mid zone (harmony)
     opacity:     0.46,
     timeOffset:  4.4,
+    zone:        'mid',  // driven by visualState.mid — reacts to vocal/harmonic energy
   },
   {
     yFraction:   0.57,
@@ -100,6 +110,7 @@ const AURORA_LAYERS = [
     color:       [255, 30, 140],   // magenta — lower-mid accent
     opacity:     0.34,
     timeOffset:  1.6,
+    zone:        'mid',  // second mid-zone layer — accent layer for harmonic movement
   },
   {
     yFraction:   0.67,
@@ -112,8 +123,58 @@ const AURORA_LAYERS = [
     color:       [0, 170, 220],    // deep teal/blue — low zone (bass)
     opacity:     0.38,
     timeOffset:  3.5,
+    zone:        'low',  // driven by visualState.bass — reacts to kick/bass energy
   },
 ];
+
+
+// ================================
+// AURORA — VISUAL STATE
+//
+// visualState holds the smoothed rendering values that drawAuroraLayer()
+// reads each frame. It is NOT the same as audioData.
+//
+// Why a separate visualState instead of reading audioData directly:
+//   audioData updates every frame with raw values that can jump sharply —
+//   a sudden loud onset snaps amplitude from 0.1 to 0.9 in one frame.
+//   Reading that directly produces mechanical, twitchy visuals.
+//   visualState lerps toward audioData each frame at a controlled rate,
+//   so the aurora moves fluidly and organically rather than snapping.
+//   The lerp speed differs per field — bass is slow and weighty, high
+//   is fast and reactive — matching the perceptual character of each band.
+//
+// Initialised to the same values as IDLE_AUDIO_DATA so the aurora starts
+// in its ambient state rather than at zero (which would make it invisible).
+// ================================
+
+const visualState = {
+  bass:          0.08,   // smoothed bass energy — slow, weighty response
+  mid:           0.04,   // smoothed mid energy — medium response
+  high:          0.02,   // smoothed high energy — fast, bright response
+  amplitude:     0.04,   // smoothed overall amplitude — global swell
+  beatIntensity: 0.0,    // smoothed beat/onset intensity — fast attack, handled by decay in audio
+};
+
+
+// ================================
+// AURORA — LERP HELPER
+//
+// Linear interpolation: moves `current` toward `target` by `factor` each frame.
+//
+//   factor 0.0 → no movement (current never changes)
+//   factor 1.0 → instant snap (current = target immediately)
+//   factor 0.04–0.10 → smooth, organic transitions over many frames
+//
+// At factor 0.05, it takes ~14 frames (~230ms) to cover 50% of the distance
+// to the target, which gives a natural, breathing quality to the motion.
+// The exact perceptual feel depends on the target range — for 0.0–1.0 audio
+// values the transitions are fast enough to feel responsive and slow enough
+// to never feel mechanical.
+// ================================
+
+function lerp(current, target, factor) {
+  return current + (target - current) * factor;
+}
 
 
 // ================================
@@ -128,13 +189,52 @@ function drawAuroraLayer(layer, time) {
   const w = canvas.width;
   const h = canvas.height;
 
-  const centerY = layer.yFraction * h;
-  const amp     = layer.amplitude * h;
-  const thick   = layer.thickness * h;
+  const centerY   = layer.yFraction * h;
   const [r, g, b] = layer.color;
 
   // Offset time by each layer's unique phase so they drift independently
   const t = time + layer.timeOffset;
+
+  // --- Resolve zone energy ---
+  // Each layer belongs to a frequency zone ('high', 'mid', or 'low').
+  // zoneEnergy is the smoothed value from visualState that corresponds
+  // to this layer's zone — it drives all the per-layer modulations below.
+  // The ?? fallback to visualState.amplitude covers any hypothetical layer
+  // without a zone property, so no layer is ever left undriven.
+  const zoneEnergy = {
+    high: visualState.high,
+    mid:  visualState.mid,
+    low:  visualState.bass,
+  }[layer.zone] ?? visualState.amplitude;
+
+  // --- Compute modulated visual properties from visualState ---
+
+  // Thickness: zone energy expands the ribbon — more energy = thicker aurora band.
+  // 0.6 sets a minimum size of 60% of the design value so the ribbon is always
+  // visible. Adding zoneEnergy × 0.8 means full energy (1.0) brings it to 140%
+  // of design thickness — a noticeable but not extreme swell.
+  const thick = layer.thickness * h * (0.6 + zoneEnergy * 0.8);
+
+  // Wave speed: higher zone energy drives faster, more agitated movement.
+  // Multiplier ranges from 1.0× (silence) to 2.5× (full energy).
+  // High-zone layers already have higher base waveSpeed values, so their
+  // treble response is naturally more frenetic than the slow bass layers.
+  const speed = layer.waveSpeed * (1.0 + zoneEnergy * 1.5);
+
+  // Opacity: three additive contributions —
+  //   1. Base layer opacity — the layer's design presence, always visible
+  //   2. Zone energy adds up to +0.25 — louder/busier frequency band = more visible
+  //   3. Beat intensity adds up to +0.35 — the whole aurora flashes on any musical
+  //      onset regardless of which zone triggered it, giving a global pulse feel
+  const opacity = Math.min(1.0,
+    layer.opacity
+    + zoneEnergy * 0.25
+    + visualState.beatIntensity * 0.35
+  );
+
+  // Wave amplitude: zone energy increases ribbon height — loud passages make the
+  // aurora swell taller. Ranges from 1.0× (silence) to 1.6× (full energy).
+  const amp = layer.amplitude * h * (1.0 + zoneEnergy * 0.6);
 
   // Build the wave point array — one point every 3px horizontally for
   // smoothness without excess computation.
@@ -150,9 +250,10 @@ function drawAuroraLayer(layer, time) {
     // Primary sine wave + secondary wobble at a different frequency.
     // The 0.65 multiplier on the wobble speed gives it a slightly different
     // tempo to the primary, avoiding a mechanical-looking repeat.
+    // `speed` replaces the static layer.waveSpeed — faster when zone is active.
     const y = centerY
-      + Math.sin(phase + t * layer.waveSpeed) * amp
-      + Math.sin(phase * layer.wobbleFreq + t * layer.waveSpeed * 0.65) * amp * layer.wobbleAmp;
+      + Math.sin(phase + t * speed) * amp
+      + Math.sin(phase * layer.wobbleFreq + t * speed * 0.65) * amp * layer.wobbleAmp;
 
     pts.push({ x, y });
   }
@@ -176,9 +277,9 @@ function drawAuroraLayer(layer, time) {
   // the result is visually indistinguishable and much cheaper to compute.
   const glowGrad = ctx.createLinearGradient(0, centerY - thick, 0, centerY + thick);
   glowGrad.addColorStop(0.00, `rgba(${r},${g},${b},0)`);
-  glowGrad.addColorStop(0.25, `rgba(${r},${g},${b},${layer.opacity * 0.45})`);
-  glowGrad.addColorStop(0.50, `rgba(${r},${g},${b},${layer.opacity})`);
-  glowGrad.addColorStop(0.75, `rgba(${r},${g},${b},${layer.opacity * 0.45})`);
+  glowGrad.addColorStop(0.25, `rgba(${r},${g},${b},${opacity * 0.45})`);
+  glowGrad.addColorStop(0.50, `rgba(${r},${g},${b},${opacity})`);
+  glowGrad.addColorStop(0.75, `rgba(${r},${g},${b},${opacity * 0.45})`);
   glowGrad.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
   ctx.fillStyle = glowGrad;
   ctx.fill();
@@ -194,12 +295,52 @@ function drawAuroraLayer(layer, time) {
 
   const coreGrad = ctx.createLinearGradient(0, centerY - coreThick, 0, centerY + coreThick);
   coreGrad.addColorStop(0.00, `rgba(255,255,255,0)`);
-  coreGrad.addColorStop(0.50, `rgba(255,255,255,${layer.opacity * 0.55})`);
+  coreGrad.addColorStop(0.50, `rgba(255,255,255,${opacity * 0.55})`);
   coreGrad.addColorStop(1.00, `rgba(255,255,255,0)`);
   ctx.fillStyle = coreGrad;
   ctx.fill();
 
   ctx.restore();
+}
+
+
+// ================================
+// AURORA — UPDATE VISUAL STATE
+//
+// Runs every frame after updateAudioData() and before drawing.
+// Lerps each visualState field toward the corresponding audioData value
+// at a rate tuned to the perceptual character of that frequency band.
+//
+// Why different lerp rates per band:
+//   Bass is slow and physical — a kick drum felt in the chest, a bass
+//   note that sustains. A slow lerp (0.04) gives it weight and momentum.
+//
+//   High frequencies are fast and airy — hi-hats, cymbal shimmers, sibilance.
+//   A faster lerp (0.10) lets the high zone flicker and react quickly.
+//
+//   Mid sits between them — vocals, piano, guitar. Medium lerp (0.06).
+//
+//   Amplitude is the overall loudness envelope — a medium-slow lerp (0.05)
+//   gives the global swell a breath-like quality rather than a hard pump.
+//
+//   beatIntensity gets the fastest lerp (0.20) because onsets need to feel
+//   sharp and immediate. The gradual fade is already handled by ONSET_DECAY
+//   in the audio layer — the visual layer just needs to track it quickly.
+// ================================
+
+function updateVisualState() {
+  // Lerp speed constants — tuned to the perceptual weight of each band.
+  const LERP_BASS = 0.04;   // slow, weighty — bass energy moves like a heavy ribbon
+  const LERP_MID  = 0.06;   // medium — harmonic content drifts fluidly
+  const LERP_HIGH = 0.10;   // fast — treble flickers and responds quickly
+  const LERP_AMP  = 0.05;   // medium-slow — global brightness swells and breathes
+  const LERP_BEAT = 0.20;   // fast attack — onset flash must feel immediate
+
+  visualState.bass          = lerp(visualState.bass,          audioData.bass,          LERP_BASS);
+  visualState.mid           = lerp(visualState.mid,           audioData.mid,           LERP_MID);
+  visualState.high          = lerp(visualState.high,          audioData.high,          LERP_HIGH);
+  visualState.amplitude     = lerp(visualState.amplitude,     audioData.amplitude,     LERP_AMP);
+  visualState.beatIntensity = lerp(visualState.beatIntensity, audioData.beatIntensity, LERP_BEAT);
 }
 
 
@@ -213,15 +354,19 @@ function drawAuroraLayer(layer, time) {
 let time = 0;
 
 function drawFrame() {
-  // Step 1: Pull fresh audio analysis data into the global audioData object.
-  // In Milestone 2 this is wired up but the values don't yet affect visuals.
+  // Step 1: Read from Web Audio API → writes raw values into audioData.
   updateAudioData();
 
-  // Step 2: Clear the canvas with the background color each frame.
+  // Step 2: Smooth audioData → visualState via per-band lerp.
+  // This is what the renderer reads — never audioData directly.
+  updateVisualState();
+
+  // Step 3: Clear the canvas with the background color each frame.
   ctx.fillStyle = '#060810';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Step 3: Draw all aurora layers back-to-front (array order = painter's order).
+  // Step 4: Draw all aurora layers back-to-front (array order = painter's order).
+  // Each layer reads visualState internally to modulate its appearance.
   AURORA_LAYERS.forEach(layer => drawAuroraLayer(layer, time));
 
   time += 0.016;
