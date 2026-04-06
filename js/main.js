@@ -419,8 +419,11 @@ const PITCH_CLASS_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A',
 // Minimum chroma energy for a pitch class to be considered "active".
 // Pitch classes below this are filtered out as noise — they exist in the FFT
 // but at such low levels that treating them as audible notes would produce
-// spurious color changes. 0.15 = 15% average fractional FFT energy per bin.
-const CHROMA_MIN_ENERGY = 0.15;
+// spurious color changes.
+// Raised from 0.15 → 0.25 after observing that all 12 pitch classes were
+// exceeding 0.15 simultaneously on typical music, leaving no useful filtering.
+// 0.25 forces the detector to respond only to genuinely dominant pitch classes.
+const CHROMA_MIN_ENERGY = 0.25;
 
 // Per-frame lerp rate for smoothing raw chroma toward the persistent
 // smoothedChroma array. Slow enough (0.05) to prevent the dominant pitch from
@@ -537,8 +540,9 @@ const smoothedChroma = new Float32Array(12).fill(0.05);
 // Scratch arrays for computeChroma() — pre-allocated at module load to avoid
 // creating new typed arrays on every frame, which would trigger garbage collection
 // 60 times per second and cause stuttering.
-const chromaSums   = new Float32Array(12);   // accumulated magnitude sum per pitch class
-const chromaCounts = new Int32Array(12);     // number of contributing FFT bins per pitch class
+const chromaSums        = new Float32Array(12);   // weighted magnitude sum per pitch class
+const chromaCounts      = new Int32Array(12);     // contributing FFT bin count per pitch class
+const chromaWeightSums  = new Float32Array(12);   // sum of bin weights per pitch class (for weighted avg normalization)
 
 // Timestamp of the last debug log line — throttles console output to once/second.
 let debugLastLogTime = 0;   // DEBUG — remove after testing
@@ -611,14 +615,16 @@ function initAudioContext() {
   //
   // Excluded frequency ranges:
   //   < 60 Hz   — sub-bass rumble; fundamental pitch too ambiguous for chroma
-  //   > 4200 Hz — above this, overtone harmonics dominate over fundamentals,
-  //               making chroma detection unreliable for pitch-class assignment
+  //   > 2000 Hz — most musical pitch information lives below 2kHz; above this,
+  //               overtone content increasingly dominates over fundamentals,
+  //               causing all 12 pitch classes to accumulate similar energy.
+  //               Narrowed from 4200 Hz after observing uniform chroma values.
   binToPitchClass = new Int8Array(analyser.frequencyBinCount).fill(-1);
   const binHz = audioCtx.sampleRate / analyser.fftSize;   // Hz per FFT bin
 
   for (let i = 0; i < analyser.frequencyBinCount; i++) {
     const freq = i * binHz;
-    if (freq < 60 || freq > 4200) continue;   // outside useful musical pitch range
+    if (freq < 60 || freq > 2000) continue;   // outside useful musical pitch range
 
     // log2(freq/440) gives distance in octaves from A4.
     // × 12 converts to semitones. Round to nearest semitone.
@@ -682,43 +688,67 @@ function getRMSAmplitude(data) {
 // AUDIO ANALYSIS — CHROMA FEATURE EXTRACTION
 //
 // Computes a 12-element chroma vector from the current FFT frame.
-// Each element is the normalized average energy present at one pitch class
+// Each element is the normalized weighted-average energy at one pitch class
 // (C, C#, D ... B) across all contributing FFT bins in the valid range.
 //
-// The bin-to-pitch-class lookup table (binToPitchClass) was built in
-// initAudioContext() and does the heavy mapping work. This function simply
-// accumulates magnitudes into 12 buckets and normalizes.
+// --- The uniform chroma problem ---
+// Without weighting, all 12 pitch classes accumulate similar energy because:
+//   1. Higher frequency bins carry many overlapping overtones from multiple
+//      notes simultaneously. Every played note's 3rd, 4th, 5th... harmonic
+//      falls in the upper range and bleeds across all pitch classes.
+//   2. Normalizing by bin count doesn't fix this — high-frequency bins are
+//      MORE numerous (linear Hz spacing vs logarithmic pitch spacing) so they
+//      dominate the average for every pitch class equally.
 //
-// Normalization: each pitch class sum is divided by (binCount × 255), giving
-// average fractional magnitude per bin — comparable across pitch classes and
-// meaningful as an absolute energy measure (0.0 = silence, 1.0 = all bins
-// in that pitch class at maximum FFT magnitude).
+// --- The fix: perceptual bin weighting ---
+// Each bin's magnitude is multiplied by a weight that decreases linearly from
+// 1.0 (bin 0) to 0.0 (bin 512) before being bucketed:
 //
-// Uses pre-allocated scratch arrays (chromaSums, chromaCounts) to avoid
-// any heap allocation on the hot path.
+//   weight(i) = Math.max(0, 1 - binIndex / 512)
+//
+// This emphasizes the low-frequency bins where fundamental pitches live and
+// progressively reduces the contribution of higher bins where overtones
+// dominate. The weighted sum is normalized by the sum of weights (not by
+// bin count) so the result is a proper weighted average.
+//
+// Combined with a tighter frequency ceiling (2000 Hz) that excludes the most
+// overtone-dense upper range, this produces a chroma vector with significantly
+// more spread between the dominant and non-dominant pitch classes.
+//
+// Uses pre-allocated scratch arrays (chromaSums, chromaCounts, chromaWeightSums)
+// to avoid any heap allocation on the hot path.
 // ================================
 
 function computeChroma(data) {
   // Clear scratch arrays — these are reused every frame.
   chromaSums.fill(0);
   chromaCounts.fill(0);
+  chromaWeightSums.fill(0);
 
-  // Accumulate raw FFT magnitudes (0–255) per pitch class.
+  // Accumulate weighted FFT magnitudes per pitch class.
   for (let i = 0; i < data.length; i++) {
     const pc = binToPitchClass[i];
-    if (pc < 0) continue;   // bin outside valid musical range
-    chromaSums[pc]   += data[i];
-    chromaCounts[pc] += 1;
+    if (pc < 0) continue;   // bin outside valid musical range (60–2000 Hz)
+
+    // Perceptual weight: linearly decreases from 1.0 at bin 0 to 0.0 at bin 512.
+    // Emphasizes fundamentals (lower bins) over overtones (higher bins).
+    // Bins above 512 would get weight 0, but the lookup table already excludes
+    // those via the 2000 Hz ceiling, so the Math.max guard is just a safety net.
+    const weight = Math.max(0, 1 - i / 512);
+
+    chromaSums[pc]       += data[i] * weight;   // weighted magnitude
+    chromaWeightSums[pc] += weight;             // accumulated weight for normalization
+    chromaCounts[pc]     += 1;                  // unweighted count (for guard only)
   }
 
-  // Normalize each pitch class to 0.0–1.0.
-  // Dividing by (count × 255) gives average fractional magnitude per bin,
-  // so a pitch class with few bins and a pitch class with many bins are
-  // directly comparable.
+  // Normalize each pitch class to 0.0–1.0 using weighted average.
+  // Dividing by (weightSum × 255) gives the weighted average fractional
+  // magnitude — directly comparable across pitch classes regardless of how
+  // many bins or how much weight each pitch class accumulated.
   const chroma = new Float32Array(12);
   for (let pc = 0; pc < 12; pc++) {
-    chroma[pc] = chromaCounts[pc] > 0
-      ? chromaSums[pc] / (chromaCounts[pc] * 255)
+    chroma[pc] = chromaWeightSums[pc] > 0
+      ? chromaSums[pc] / (chromaWeightSums[pc] * 255)
       : 0;
   }
   return chroma;
@@ -948,8 +978,12 @@ function updateAudioData() {
     const secNames = secondaryPitches.length > 0   // DEBUG
       ? secondaryPitches.map(p => `${p}(${PITCH_CLASS_NAMES[p]})`).join(', ')   // DEBUG
       : '(none)';   // DEBUG
+    const chromaMax    = Math.max(...smoothedChroma);   // DEBUG
+    const chromaMin    = Math.min(...smoothedChroma);   // DEBUG
+    const chromaSpread = (chromaMax - chromaMin).toFixed(3);   // DEBUG
     console.log(`[Chroma raw]      ${rawStr}`);   // DEBUG
     console.log(`[Chroma smoothed] ${smthStr}`);   // DEBUG
+    console.log(`[Chroma spread]   max: ${chromaMax.toFixed(3)} | min: ${chromaMin.toFixed(3)} | spread: ${chromaSpread} (target: ≥0.6)`);   // DEBUG
     console.log(`[Pitch]           dominant: ${dominantPitch} (${domName}) | secondary: ${secNames}`);   // DEBUG
     console.log(`[Brightness]      spectralBrightness: ${spectralBrightness.toFixed(3)}`);   // DEBUG
   }   // DEBUG
