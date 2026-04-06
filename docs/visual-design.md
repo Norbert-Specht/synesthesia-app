@@ -1,60 +1,118 @@
 # Visual Design — Synesthesia App
 
-> This document captures all visual design decisions for the Synesthesia App. It is a living document — update it whenever a design decision is made or revised.
+> Living document. Update whenever a visual design decision is made or revised.
+> Last updated: Milestone 3 rebuild — pitch-driven dynamic ribbon system.
 
 ---
 
 ## The Core Metaphor: Aurora Borealis
 
-The visualization is modeled after the **aurora borealis** (northern lights). This metaphor was chosen deliberately because it solves the central design challenge of chromesthesia visualization:
-
-**The problem:** Chromesthesia is layered — multiple simultaneous colors from melody, harmony, bass, timbre, rhythm, and dynamics all happening at once. Naive rendering becomes visual mud.
+The visualization is modeled after the **aurora borealis** (northern lights). This metaphor solves the central design challenge of chromesthesia visualization — multiple simultaneous colors — elegantly and naturally.
 
 **Why aurora works:**
-- Aurora has natural **spatial separation** — distinct ribbons of light occupying different zones
-- Aurora uses **translucency and blending** — ribbons overlap without canceling each other out
-- Aurora moves **organically** — fluid, wave-like, never mechanical
-- Aurora has **scale and atmosphere** — it feels immersive and vast, not like a data visualization
-- Aurora **pulses** — it breathes and responds, which maps naturally to rhythm and dynamics
-
-The aurora metaphor transforms a complex multi-layer data problem into something that feels natural and emotionally resonant.
+- Natural **vertical ribbon structure** — curtains of light rising from the horizon, not horizontal bands
+- **Asymmetric** by nature — ribbons appear at irregular horizontal positions
+- **Translucency and blending** — ribbons overlap without canceling each other
+- **Organic movement** — fluid, wave-like, never mechanical
+- **Irregular thickness** — ribbons pinch, swell, and vary along their length
+- **Atmospheric depth** — the sky behind the ribbons has color and life, not flat black
 
 ---
 
 ## Screen Layout
 
-The visualizer is **full-screen** with no UI chrome visible during playback. Controls appear on hover or are tucked into a minimal overlay.
+Full-screen. No UI chrome during playback. Controls appear on hover at the bottom.
 
-### Frequency Zone Mapping
-
-The screen is divided into three fluid, overlapping vertical zones:
+### Layer Stack (back to front)
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                                                     │
-│   ≋≋≋  HIGH ZONE — melody / high frequencies  ≋≋≋  │
-│         bright · fast-moving · arcing               │
-│   ░░░░░░░░░░░░░░ blend zone ░░░░░░░░░░░░░░░░░░░░░  │
-│                                                     │
-│   ≈≈≈  MID ZONE — harmony / midrange  ≈≈≈≈≈≈≈≈≈≈  │
-│         warm · medium drift · chord-driven          │
-│   ░░░░░░░░░░░░░░ blend zone ░░░░░░░░░░░░░░░░░░░░░  │
-│                                                     │
-│   ▓▓▓  LOW ZONE — bass / low frequencies  ▓▓▓▓▓▓  │
-│         deep · slow · rhythmic pulse                │
-│                                                     │
-└─────────────────────────────────────────────────────┘
+1. Sky background    — dynamic deep blue-teal gradient, music-responsive
+2. Stars             — subtle static points, not music-reactive
+3. Background glow   — very wide, soft blend of all active pitch colors
+4. Secondary ribbons — 1–2 dimmer ribbons, subordinate pitch classes
+5. Primary ribbon    — dominant pitch class, brightest, most defined
+6. UI controls       — hover-reveal bar at bottom (z-index above canvas)
 ```
 
-**Important:** These are not rigid bands with hard edges. They are **gradient fields** that bleed into each other. The blend zones between them are where the most interesting color interactions happen.
+---
 
-### Zone Behavior
+## Ribbon System
 
-| Zone | Frequency Range | Movement | Color Character |
-|---|---|---|---|
-| **High** | 2kHz–20kHz | Fast, arcing, flickering | Bright, high saturation, lighter hues |
-| **Mid** | 250Hz–2kHz | Medium drift, flowing | Warm, mid-saturation, key-driven |
-| **Low** | 20Hz–250Hz | Slow, rolling, pulsing on beat | Deep, dark, high saturation on peaks |
+### Orientation
+
+Ribbons are **vertical** — they rise from the bottom edge of the screen upward. This matches real aurora photographs and avoids the "stacked horizontal stripes" problem of the previous implementation.
+
+Each ribbon is rendered as a sine wave path that sweeps **vertically** across the canvas height, with lateral drift along the x-axis creating the characteristic ribbon curl and movement.
+
+### Ribbon Anatomy
+
+Each ribbon is rendered in two passes:
+
+**Pass 1 — Outer glow** (wide, soft, translucent)
+A wide gradient field around the ribbon center. This is where secondary pitch colors live. The gradient runs from the dominant pitch color at the inner edge outward toward the secondary pitch colors at the outer edge, then fades to transparent.
+
+```
+Transparent → Secondary pitch color → Dominant pitch color → Core →
+Dominant pitch color → Secondary pitch color → Transparent
+```
+
+**Pass 2 — Bright core** (narrow, near-neon, hot center)
+A tight bright line at the ribbon center. Near-white at the very hottest point, becoming the pure dominant pitch hue as it moves outward a few pixels. This is the "neon" quality seen in aurora photographs.
+
+### Ribbon Roles
+
+| Role | Count | Opacity | Thickness | Color |
+|---|---|---|---|---|
+| **Primary** | 1 | 0.85–1.0 | Full | Dominant pitch class → profile |
+| **Secondary** | 1–2 | 0.35–0.55 | 55–70% of primary | 2nd and 3rd most active pitch classes |
+| **Background glow** | 1 | 0.08–0.18 | Full screen width | Weighted blend of all active pitches |
+
+### Ribbon Lifecycle States
+
+Each ribbon object carries a lifecycle state that determines how it renders and whether it persists:
+
+```javascript
+// Lifecycle states
+'rising'   — newly spawned, opacity animating from 0 to target
+'active'   — fully visible, responding to music
+'demoting' — was primary, now becoming secondary (dims and thins)
+'fading'   — being retired, opacity animating to 0
+'dead'     — opacity reached 0, removed from pool
+```
+
+**Transitions:**
+- New dominant pitch detected → spawn new primary ribbon in `rising` state
+- Previous primary → `demoting` → becomes secondary when transition completes
+- Displaced secondary → `fading` → removed when opacity reaches 0
+- Maximum 3 ribbons alive at once (1 primary + 2 secondary)
+
+### Horizontal Positioning
+
+Ribbons are positioned asymmetrically across the screen width. When a new ribbon spawns, its x-position is chosen with controlled randomness:
+
+- The screen is divided into loose thirds (left, center, right)
+- New ribbon spawns in a third that isn't already occupied by the primary
+- Within that third, position has ±15% random variation
+- This ensures ribbons never stack on top of each other and never feel mechanically distributed
+
+### Irregular Thickness
+
+Ribbon thickness is not uniform along its length. A secondary noise function modulates the thickness at each point along the ribbon, creating pinching and swelling — matching the natural irregularity of real aurora curtains.
+
+```
+thickness(y) = baseThickness × (1 + noiseFunction(y, time) × 0.4)
+```
+
+### Dynamics and Ribbon Origin
+
+The point where a ribbon appears to "begin" (its lowest visible point) is modulated by amplitude:
+
+- **Quiet passages** — ribbon origin appears higher up the screen (shorter, less imposing ribbon)
+- **Loud passages** — ribbon origin drops toward the bottom edge (ribbon appears to rise from the horizon)
+
+This connects musical dynamics directly to the visual sense of scale and atmosphere.
+
+*Implementation detail: the ribbon is always rendered from the bottom edge; the "origin" effect is achieved by fading the ribbon's opacity from zero at the bottom up to full opacity at a variable height threshold driven by amplitude.*
 
 ---
 
@@ -62,131 +120,158 @@ The screen is divided into three fluid, overlapping vertical zones:
 
 ### The Color Pipeline
 
-Color is never a static value. Every rendered color is the **output of a sequential pipeline** that runs in real-time:
+Every rendered color is the output of a sequential pipeline running in real-time:
 
 ```
-1. BASE HUE
-   Source: musical key + active synesthesia profile
-   Output: a hue value (0–360°) representing the tonal center
+1. DOMINANT PITCH CLASS
+   Source: chroma analysis → highest energy pitch class (C, C#, D ... B)
+   Output: pitch class index (0–11)
 
         ↓
 
-2. TIMBRE SHIFT
-   Source: dominant instrument / frequency band character
-   Output: hue rotated ±30° based on timbre brightness/warmth
+2. PROFILE LOOKUP
+   Source: active synesthete profile (e.g. Rimsky-Korsakov)
+   Output: base HSL hue (0–360°) for this pitch class
 
         ↓
 
-3. AMPLITUDE MODULATION
-   Source: volume / dynamics at this moment
-   Output: saturation scaled 20%–100% with amplitude
+3. OCTAVE REGISTER
+   Source: dominant frequency of the pitch class
+   Output: lightness modifier — higher octave = +lightness
 
         ↓
 
-4. PITCH BRIGHTNESS
-   Source: dominant frequency in this zone
-   Output: lightness scaled — higher pitch = lighter, lower pitch = darker
+4. TIMBRE MODULATION
+   Source: spectral brightness (ratio of high-frequency energy)
+   Output: saturation shift ±15% based on instrument brightness
 
         ↓
 
-5. FINAL COLOR
-   Rendered as HSL to canvas layer with opacity 0.6–0.85
-   (translucency enables natural blending between zones)
+5. AMPLITUDE MODULATION
+   Source: RMS amplitude
+   Output: saturation scaled 30%–100% with overall loudness
+
+        ↓
+
+6. ONSET FLASH
+   Source: beatIntensity (decaying value from spectral flux detector)
+   Output: lightness boost up to +20% on onset, decaying quickly
+
+        ↓
+
+7. FINAL COLOR
+   Rendered as HSL with opacity per ribbon role
+   (translucency enables natural blending between ribbons)
 ```
 
-### Why HSL, Not RGB or Hex
+### Why HSL
 
-HSL (Hue, Saturation, Lightness) is the right color model for this project because:
-- **Hue** maps directly to the musical/synesthetic concept of a note's "color"
-- **Saturation** maps directly to dynamics (loud = vivid, quiet = pale)
-- **Lightness** maps directly to pitch (high = bright, low = dark)
+- **Hue** maps to pitch class (the synesthetic color)
+- **Saturation** maps to dynamics (loud = vivid, quiet = pale)
+- **Lightness** maps to octave register and onset intensity
 
-RGB and hex are output formats, not design tools. All internal color logic uses HSL.
+RGB and hex are output formats only. All internal color logic uses HSL.
+
+### Secondary Pitch Colors in the Glow
+
+The glow gradient of the primary ribbon incorporates secondary pitch colors. The blend is weighted by chroma energy:
+
+```
+glowColor = weightedBlend(
+    dominantPitchColor   × 0.65,
+    secondaryPitch1Color × 0.25,
+    secondaryPitch2Color × 0.10
+)
+```
+
+This creates a natural, research-accurate representation of how synesthetes experience chords — one dominant color with harmonic nuance in the atmosphere around it.
 
 ---
 
-## Movement & Animation
+## Movement and Animation
 
 ### Principles
 
-- **No hard cuts** — all color transitions are interpolated over time
-- **Organic, not mechanical** — movement uses Perlin noise or layered sine waves, not linear functions
-- **Responsive to music** — the music drives every visual parameter. Nothing animates on a fixed timer independent of the audio
-- **Breath and pulse** — even during sustained notes, the visualization breathes gently. Nothing is ever fully static.
+- **No hard cuts** — all transitions interpolated via lerp
+- **Organic, not mechanical** — dual sine waves with different frequencies and offsets
+- **Always moving** — even during silence, ribbons breathe gently
+- **Music-responsive** — every visual parameter has an audio driver
 
 ### Animation Layers
 
 | Layer | Driver | Behavior |
 |---|---|---|
-| **Slow drift** | Continuous, Perlin noise | Gentle horizontal/vertical movement of color fields. Always active. |
-| **Harmonic pulse** | Chord changes | Gradual bloom and fade as harmony shifts |
-| **Onset pulse** | Spectral flux onset detection | Sharp but smooth intensity spike on any detected musical onset (kick, snare, strum, piano hit — any instrument), fades quickly |
-| **Dynamic swell** | Amplitude envelope | Overall brightness/saturation swells with volume |
-| **Transient flash** | Attack transients | Brief brightness spike on sharp note attacks (percussive sounds) |
+| **Ribbon drift** | Time + sine functions | Slow lateral sway of ribbon body |
+| **Thickness pulse** | Zone energy + onset | Ribbon swells on loud moments |
+| **Origin fade** | Amplitude | Bottom fade point rises/falls with dynamics |
+| **Onset flash** | beatIntensity | All ribbons brighten briefly on onset |
+| **Color transition** | Pitch class change | Hue lerps when dominant pitch shifts |
+| **Sky gradient** | Amplitude + pitch blend | Background hue shifts with musical energy |
+| **Star twinkle** | Optional slow noise | Very subtle, not music-reactive |
 
-### Timing Parameters (Starting Points, to be tuned)
+### Lerp Rates
 
-- Slow drift cycle: 8–20 seconds per full movement
-- Beat pulse decay: ~300ms
-- Harmonic transition: 500ms–2s depending on tempo
-- Transient flash: ~80ms
+| Parameter | Rate | Perceptual character |
+|---|---|---|
+| Ribbon opacity (rising) | 0.03 | Slow bloom — ~2 seconds to full |
+| Ribbon opacity (fading) | 0.02 | Slower fade — graceful exit |
+| Color hue transition | 0.04 | Smooth, not snapping |
+| Thickness | 0.08 | Medium response |
+| Onset intensity | 0.20 | Fast attack, handled by decay in audio |
+| Sky gradient | 0.02 | Very slow, atmospheric |
 
 ---
 
-## Interaction Design
+## Sky Background
 
-### During Playback (Full-Screen Mode)
-- No visible UI
-- Mouse movement reveals a minimal translucent control bar at bottom
-- Controls: pause/play, profile switcher, volume, exit full-screen
-- Escape key exits full-screen
+### Base Color
 
-### Profile Switcher
-- Accessible during playback via hover
-- Switching profiles cross-fades the color palette over ~2 seconds — no jarring jump
-- Active profile name shown briefly as a subtle text overlay, then fades
+Deep near-black with a blue-teal cast: `hsl(220, 45%, 6%)` as the base. Not pure black — it has the atmospheric quality of a real night sky.
 
-### Custom Profile Builder (Separate View)
-A dedicated screen (not shown during playback) with:
-1. **Major key color picker** — sets the warm/bright palette anchor
-2. **Minor key color picker** — sets the cool/dark palette anchor
-3. **Favorite key selector + color picker** — personal accent color
-4. **Live preview** — a small aurora preview that responds to a short audio sample
-5. **Save / Name profile** button
+### Dynamic Shift
+
+Each frame, the sky gradient target hue is pulled slightly toward the weighted average of all active pitch class hues, scaled by amplitude. At low amplitude the sky barely shifts. At high amplitude it picks up more color from the music.
+
+```
+skyHue = lerp(skyHue, weightedActiveHueAverage, amplitude × 0.015)
+```
+
+### Stars
+
+Randomly positioned points, rendered once and cached. Very low opacity (0.3–0.7). Optional slow twinkle via a noise function on opacity. Not reactive to music — they provide a stable sense of depth and distance.
 
 ---
 
 ## Visual Mood Reference
 
-The target aesthetic sits at the intersection of:
-
-- **Scientific accuracy** — grounded in real chromesthesia research, not arbitrary color choices
-- **Natural beauty** — aurora borealis as the visual template: vast, fluid, atmospheric
-- **Emotional resonance** — colors that feel emotionally consistent with the music
-- **Restraint** — the visualization should never compete with the music. It accompanies and illuminates.
+Target aesthetic:
+- **Scientific accuracy** — grounded in chromesthesia research
+- **Natural beauty** — aurora borealis as visual template
+- **Emotional resonance** — colors feel consistent with the music
+- **Restraint** — visualization accompanies music, never competes
 
 ### What to Avoid
 - Hard geometric shapes or sharp edges
-- Rapid strobing or epilepsy-risk patterns
-- Oversaturated neon that feels like a club visualizer
-- Static color blocks that don't breathe or move
-- UI chrome visible during the core experience
+- Rapid strobing (epilepsy risk)
+- Oversaturated neon that reads as a club visualizer
+- Static elements that don't breathe
+- Perfectly even ribbon spacing (mechanical)
+- Horizontal bands (previous mistake)
 
 ---
 
-## Technical Approach (To Be Finalized in Milestone 4)
+## Technical Approach
 
-### Canvas vs. WebGL
-- **Canvas 2D** — simpler to implement, sufficient for 3-zone aurora at 60fps on modern hardware
-- **WebGL** — better performance for complex layering, more control over blending modes, higher ceiling for visual quality
-
-**Current preference:** Start with Canvas 2D for Milestone 4. Migrate to WebGL if performance becomes a constraint or if we want more advanced visual effects later.
+### Canvas 2D
+Starting with Canvas 2D. Sufficient for the ribbon system at 60fps on modern hardware. Revisit WebGL if performance becomes a constraint after M3.
 
 ### Rendering Strategy
-- Each frequency zone rendered as a separate canvas layer or composited draw call
-- Perlin noise library (e.g. `simplex-noise`) for organic movement
-- `requestAnimationFrame` loop synced to Web Audio API analysis
-- Color values computed each frame from live audio data
+- Sky background rendered first each frame (fillRect with gradient)
+- Stars rendered second (cached point positions)
+- Background glow ribbon rendered third (very wide, low opacity)
+- Secondary ribbons rendered fourth
+- Primary ribbon rendered last (on top)
+- UI controls overlay via CSS z-index (not canvas)
 
 ---
 
@@ -194,13 +279,12 @@ The target aesthetic sits at the intersection of:
 
 | Question | Status | Notes |
 |---|---|---|
-| Canvas 2D vs WebGL | 🔲 Open | Revisit in Milestone 4 |
-| Perlin noise library choice | 🔲 Open | simplex-noise is leading candidate |
-| Mobile layout (vertical screen) | 🔲 Open | Zone mapping may need to rotate or adapt |
-| Epilepsy/accessibility considerations | 🔲 Open | Need a reduced-motion mode |
-| Background color during silence | 🔲 Open | Deep near-black? Slow idle animation? |
+| Canvas 2D vs WebGL | 🔲 Open | Revisit after M3 |
+| Dynamics → ribbon origin exact implementation | 🔲 Open | Bottom-fade approach described above, needs tuning |
+| Star twinkle — music-reactive or not | ✅ Decided | Not reactive — provides stable depth reference |
+| Mobile layout (vertical screen) | 🔲 Open | TBD M5 |
+| Epilepsy / reduced-motion mode | 🔲 Open | Planned M5 |
 
 ---
 
-*Last updated: Milestone 2 — spectral flux onset detection added*
-*See also: `README.md`, `docs/research.md`*
+*See also: `README.md`, `docs/audio-analysis.md`, `docs/research.md`*

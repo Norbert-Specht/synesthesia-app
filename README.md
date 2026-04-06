@@ -22,8 +22,8 @@ The app is built as a learning project in collaboration with Claude (Anthropic),
 ## Tech Stack
 
 - **HTML / CSS / JavaScript** — vanilla, no framework
-- **Web Audio API** — real-time audio analysis (frequency, amplitude, onset detection via spectral flux)
-- **Canvas API** — animated color visualizations
+- **Web Audio API** — real-time audio analysis (chroma extraction, amplitude, spectral flux onset detection)
+- **Canvas API** — animated aurora borealis visualization
 - **GitHub** — version control and collaboration
 - **Vercel or Netlify** — deployment (TBD)
 
@@ -31,7 +31,7 @@ The app is built as a learning project in collaboration with Claude (Anthropic),
 
 ## Synesthesia Research Foundation
 
-This section is the conceptual core of the project. Design and feature decisions are grounded in it.
+This section is the conceptual core of the project. All design and feature decisions are grounded in it.
 
 ### What is Chromesthesia?
 
@@ -41,22 +41,29 @@ Chromesthesia (also called sound-to-color synesthesia) is a form of synesthesia 
 - The experience is **involuntary** — they cannot switch it off
 - Colors may appear **projected in space** ("projectors") or in the mind's eye ("associators")
 
-### Key Perceptual Mappings (Research-Informed)
+### Key Research Findings (Informing Architecture)
 
-These are the audio dimensions we analyze and map to visual properties:
+**On polyphonic music and chords:**
+Chords produce a dominant color from the root/most prominent note, with secondary notes adding nuance and tint. The experience does not fragment into one color per note — it blends, with the dominant pitch winning the primary hue and other notes subtly shifting it.
 
-| Audio Feature | Visual Property | Research Basis |
+**On timbre:**
+Timbre-color synesthesia is real but affects roughly 26% of chromesthetes — it is a subtype, not universal. For those who experience it, timbre modifies *lightness and saturation* of the color rather than the hue itself. Higher pitch registers produce lighter, less saturated colors; lower registers produce darker, more saturated ones.
+
+**On pitch as the universal foundation:**
+Every form of chromesthesia involves pitch → color. It is the one consistent, universal mapping across all synesthetes. Timbre and dynamics modify it, but pitch drives hue.
+
+### Key Perceptual Mappings
+
+| Audio Feature | Visual Property | Notes |
 |---|---|---|
-| **Pitch / Frequency** | Brightness / Lightness | Higher notes → lighter colors; lower notes → darker |
-| **Timbre** | Hue | Instrument character drives color family |
-| **Amplitude / Volume** | Saturation / Intensity | Louder = more vivid, more saturated |
-| **Tempo / Rhythm** | Animation speed, pulse rate | Faster tempo → faster color transitions |
-| **Musical Key** | Base color palette | Keys have strong cross-synesthete color associations |
-| **Chord quality** | Color temperature | Major = warm; Minor = cool/dark |
+| **Dominant pitch class** | Hue | Primary driver — profile lookup (e.g. Rimsky-Korsakov) |
+| **Secondary pitch classes** | Hue blend in glow | Nuance the dominant color without overriding it |
+| **Timbre** | Lightness + saturation shift | Affects how the color looks, not which color |
+| **Amplitude / dynamics** | Saturation + ribbon height | Louder = more vivid, taller ribbons |
+| **Pitch register (octave)** | Lightness | Higher octave = lighter shade of same hue |
+| **Onset** | Brightness pulse | Sharp spike that decays quickly |
 
-### Notable Key-Color Associations (Cross-Synesthete Patterns)
-
-These are recurring patterns observed across multiple synesthetes in research:
+### Notable Key-Color Associations
 
 - **C major** — white, pure, bright
 - **D major** — golden yellow, triumphant
@@ -67,124 +74,120 @@ These are recurring patterns observed across multiple synesthetes in research:
 - **B minor** — dark, cold, steel blue
 - **D minor** — grey, melancholic
 
----
-
-## Profile System
-
-The core UX concept of the app. Users choose *whose* synesthetic experience they want to explore.
-
-### Profile Types
-
-#### 🎼 Famous Synesthete Profiles
-Documented color mappings from known chromesthetes. Profiles to implement:
-
-- **Nikolai Rimsky-Korsakov** (1844–1908) — Russian composer; one of the most thoroughly documented synesthetic palettes in music history
-- **Franz Liszt** (1811–1886) — reportedly instructed his orchestra by color ("more pink here", "not so violet")
-- **Pharrell Williams** (b. 1973) — contemporary musician with documented chromesthesia
-- *(More to be researched and added — see `docs/research.md`)*
-
-#### 🔬 Research Themes
-Curated presets based on aggregate scientific data. Easy starting points for non-synesthetes:
-
-- **Warm Spectrum** — based on majority warm-tone associations from Ward & Eagleman studies
-- **Cool Spectrum** — cooler, darker palette common in minor-key associations
-- **Classic / Neutral** — balanced palette derived from Cytowic's research
-
-#### ✏️ Custom Profiles
-Users build their own profiles via a **mood-based color picker** — not a music theory exercise. The app asks 3 simple questions:
-1. Pick a color for major keys
-2. Pick a color for minor keys
-3. Pick a color for your favorite key
-
-From those 3 inputs the app interpolates the full 24-key palette. The user makes 3 decisions, the app makes 21. Profiles are stored in localStorage and will be exportable/shareable in a future milestone.
-
-
----
-
-## Feature Roadmap
-
-### Milestone 1 — Foundation
-- [x] Project structure and file setup
-- [x] GitHub repo initialized
-- [x] Audio file upload and basic playback
-- [x] README and docs in place
-
-### Milestone 2 — Audio Analysis
-- [x] Web Audio API integration
-- [x] Real-time frequency extraction (bass / mid / high bands)
-- [x] Amplitude tracking (RMS)
-- [x] Onset detection via spectral flux (replaces kick-drum-only bass detection)
-- [x] `audioData` object exposed to render loop each frame
-
-### Milestone 3 — Color Mapping
-- [ ] Profile data structure defined
-- [ ] Rimsky-Korsakov profile implemented
-- [ ] Research theme presets implemented
-- [ ] Color mapping logic (audio features → color values)
-
-### Milestone 4 — Visualization
-- [ ] Canvas-based animated color display
-- [ ] Reacts to live audio in real-time
-- [ ] Profile switcher UI
-- [ ] Visual polish
-
-### Milestone 5 — Custom Profiles & Polish
-- [ ] Custom profile builder UI
-- [ ] localStorage persistence
-- [ ] Pharrell Williams + Liszt profiles added
-- [ ] Responsive design
-
-### Milestone 6 — Deployment
-- [ ] Vercel or Netlify deployment
-- [ ] Custom domain (optional)
-- [ ] Spotify API integration (stretch goal)
+See `docs/research.md` for the full Rimsky-Korsakov palette.
 
 ---
 
 ## Visual Design Direction
 
-The visualization is a **full-screen aurora borealis experience**. This metaphor resolves the core complexity challenge of chromesthesia (multiple simultaneous colors) elegantly and beautifully.
+The visualization is a **full-screen aurora borealis experience**.
 
 ### Core Principles
-- **Full-screen immersive** — no chrome, no distractions while music plays
-- **Fluid spatial zones** — frequency bands occupy vertical zones on screen, like aurora ribbons. Not rigid bands — breathing, overlapping, organic
-- **Translucency and blending** — colors overlap with transparency, preventing visual mud
-- **Organic movement** — Perlin noise or sine wave functions drive movement, never mechanical or abrupt
-- **Pulse on beat** — rhythm drives pulse intensity across all zones simultaneously
 
-### Frequency Band → Spatial Zone Mapping
+- **Full-screen immersive** — no UI chrome visible during playback
+- **Vertical ribbon orientation** — ribbons rise from bottom edge, like real aurora curtains
+- **Asymmetric distribution** — ribbons positioned unevenly, never evenly spaced
+- **Dynamic ribbon lifecycle** — ribbons born, promoted, demoted, faded as pitch changes
+- **Translucency and blending** — ribbons overlap with transparency
+- **Living sky background** — dynamic deep blue-teal gradient + stars
+
+### Ribbon Anatomy (Option B + Option D)
+
+**The core** — tight, bright, near-neon center line. Pure dominant pitch hue.
+
+**The glow** — wide, soft, translucent halo. Gradient shifts from dominant pitch color (inner edge) toward secondary pitch colors (outer edge). Harmonic complexity expressed as color complexity within a single ribbon.
+
+### Ribbon Lifecycle
+
 ```
-Top of screen     ← melody / high frequencies  (bright, fast, arcing)
-Middle of screen  ← midrange / harmony          (warm, medium drift)
-Bottom of screen  ← bass / low frequencies      (deep, slow, pulsing)
+New dominant pitch detected
+    → New PRIMARY ribbon rises from bottom, blooms to full brightness
+    → Previous primary DEMOTES → dims, thins, becomes secondary
+    → Old secondaries FADE OUT gracefully
+
+Harmony stable
+    → Ribbons hold position, breathing with dynamics and onsets
+    → Glow gradient shifts subtly as chord voicing changes
+
+Music quiet / stopped
+    → All ribbons slowly fade into idle ambient state
 ```
 
-### Color as a Pipeline
-Color is never a fixed value — it is the output of a sequential pipeline:
+### Ribbon Roles
+
+| Role | Count | Character | Color Source |
+|---|---|---|---|
+| **Primary** | 1 | Brightest, tallest, most defined | Dominant pitch class → profile |
+| **Secondary** | 1–2 | Dimmer, thinner, softer | Next most active pitch classes |
+| **Background glow** | 1 | Wide, very soft, fills sky | Blend of all active pitch colors |
+
+### Color Pipeline
+
 ```
-Base hue (from musical key / profile)
-  → shifted by timbre (instrument character)
-  → saturated/desaturated by amplitude (dynamics)
-  → brightened/darkened by pitch (frequency)
-  = final rendered color
+Dominant pitch class (chroma analysis)
+    → Profile lookup → Base HSL hue
+        → Octave register → Lightness modifier
+            → Timbre → Saturation modifier
+                → Amplitude → Global saturation swell
+                    → Onset → Brightness pulse
+                        = Final rendered color
 ```
 
 See `docs/visual-design.md` for full detail.
 
 ---
 
-## Open Design Questions
+## Profile System
 
-| Question | Status | Decision |
-|---|---|---|
-| Whose synesthesia do we visualize? | ✅ Decided | Famous profiles + Research themes + Custom profiles |
-| Visualization style | ✅ Decided | Full-screen aurora borealis, fluid frequency zones |
-| Custom profile complexity | ✅ Decided | 3 user inputs, app interpolates remaining 21 keys |
-| Color rendering approach | ✅ Decided | Pipeline model: key → timbre → amplitude → pitch |
-| Onset / beat detection method | ✅ Decided | Spectral flux — detects all musical onsets across full spectrum, not kick-drum only |
-| Spotify integration scope | 🔲 Open | Stretch goal for now |
-| Mobile support priority | 🔲 Open | TBD |
-| WebGL vs Canvas | 🔲 Open | TBD in Milestone 4 — WebGL preferred for performance |
+### 🎼 Famous Synesthete Profiles
+- **Nikolai Rimsky-Korsakov** — first profile implemented
+- **Franz Liszt** — planned Milestone 4
+- **Pharrell Williams** — planned Milestone 4
+
+### 🔬 Research Themes
+- Warm Spectrum, Cool Spectrum, Classic/Neutral — planned Milestone 4
+
+### ✏️ Custom Profiles
+3-input mood picker interpolates full 12 pitch class palette. Planned Milestone 5.
+
+---
+
+## Feature Roadmap
+
+### Milestone 1 — Foundation ✅
+- [x] Project structure, GitHub repo, audio upload and playback
+- [x] Aurora canvas with ambient animation, README and docs
+
+### Milestone 2 — Audio Analysis ✅
+- [x] Web Audio API, frequency extraction, RMS amplitude
+- [x] Spectral flux onset detection
+- [x] `audioData` object exposed to render loop each frame
+
+### Milestone 3 — Pitch-to-Color + Aurora Rebuild 🔲
+- [ ] Chroma feature extraction (12 pitch class energies from FFT)
+- [ ] `profiles/` folder and profile data structure defined
+- [ ] Rimsky-Korsakov profile as first profile (`profiles/rimsky-korsakov.js`)
+- [ ] Dominant + secondary pitch class detection each frame
+- [ ] Dynamic ribbon pool — born, promoted, demoted, faded
+- [ ] Vertical ribbon geometry (replacing horizontal sine waves)
+- [ ] Option D color gradient within ribbons (core → glow → secondary pitch colors)
+- [ ] Asymmetric horizontal positioning with controlled randomness
+- [ ] Dynamic sky background (music-responsive gradient + stars)
+- [ ] Dynamics-driven ribbon origin point
+
+### Milestone 4 — Profile System UI 🔲
+- [ ] Profile switcher UI, cross-fade between profiles
+- [ ] Liszt and Pharrell Williams profiles
+- [ ] Research theme presets
+
+### Milestone 5 — Custom Profiles & Polish 🔲
+- [ ] Custom profile builder (3-input mood picker)
+- [ ] localStorage persistence
+- [ ] Responsive design, reduced-motion accessibility mode
+
+### Milestone 6 — Deployment 🔲
+- [ ] Vercel or Netlify, custom domain (optional)
+- [ ] Spotify API integration (stretch goal)
 
 ---
 
@@ -192,35 +195,61 @@ See `docs/visual-design.md` for full detail.
 
 ```
 synesthesia-app/
-├── README.md               ← You are here. Also Claude's briefing document.
+├── README.md
+├── CLAUDE.md
 ├── index.html
 ├── css/
 │   └── style.css
 ├── js/
 │   └── main.js
+├── profiles/
+│   └── rimsky-korsakov.js
 ├── assets/
-│   └── audio/              ← Test audio files
+│   └── audio/
 └── docs/
-    └── research.md         ← Extended synesthesia research notes
+    ├── research.md
+    ├── visual-design.md
+    └── audio-analysis.md
 ```
+
+---
+
+## Open Design Questions
+
+| Question | Status | Decision |
+|---|---|---|
+| Whose synesthesia? | ✅ Decided | Famous profiles + Research themes + Custom |
+| Visualization style | ✅ Decided | Full-screen aurora, vertical ribbons, asymmetric |
+| Ribbon color model | ✅ Decided | Option B + Option D |
+| Ribbon lifecycle | ✅ Decided | Dynamic — born, promoted, demoted, faded |
+| Custom profile complexity | ✅ Decided | 3 inputs, app interpolates rest |
+| Color pipeline | ✅ Decided | Pitch → profile → octave → timbre → amplitude → onset |
+| Onset detection | ✅ Decided | Spectral flux |
+| Polyphonic color | ✅ Decided | Dominant pitch wins hue, secondary pitches tint glow |
+| Timbre role | ✅ Decided | Modifies lightness + saturation only |
+| Dynamics → ribbon origin | 🔲 Open | Idea captured, needs implementation design |
+| Canvas 2D vs WebGL | 🔲 Open | Revisit after M3 if performance is a concern |
+| Mobile layout | 🔲 Open | TBD M5 |
+| Epilepsy / reduced-motion | 🔲 Open | Planned M5 |
+| Spotify integration | 🔲 Open | Stretch goal |
 
 ---
 
 ## How to Use This README When Working with Claude
 
-Paste the relevant sections of this README at the start of any new Claude session. Suggested prompt structure:
+> *"Here's my project README: [paste]. We're on Milestone [X]. Last session we completed [Y]. Today I want to work on [Z]."*
 
-> *"Here's my project README for context: [paste README or relevant sections]. We're currently on Milestone [X]. Last session we completed [Y]. Today I want to work on [Z]."*
-
-This gives Claude full project context immediately, since Claude has no memory between conversations.
+Claude has no memory between conversations — this README is Claude's briefing document.
 
 ---
 
 ## References & Further Reading
 
 - Cytowic, R.E. — *Synesthesia: A Union of the Senses* (2002)
-- Ward, J. & Eagleman, D. — Research on synesthetic color associations and pitch
-- Rimsky-Korsakov documented key-color table — see `docs/research.md`
+- Ward, J. & Eagleman, D. — synesthetic color associations and pitch
+- Niccolai et al. (2012) — Timbre-color synesthesia prevalence
+- Frontiers in Psychology (2025) — Timbre-color with morphed instrument timbres
+- The Synesthesia Tree — chord-color and tone-color documentation
 - [Wikipedia: Chromesthesia](https://en.wikipedia.org/wiki/Chromesthesia)
 
 ---

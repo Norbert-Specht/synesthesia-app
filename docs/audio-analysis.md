@@ -1,12 +1,11 @@
 # Audio Analysis Architecture — Synesthesia App
 
-> This document explains the audio analysis decisions made in Milestone 2, including why spectral flux was chosen for onset detection over simpler beat detection methods. Update this document whenever the analysis pipeline changes.
+> Living document. Update whenever the audio analysis pipeline changes.
+> Last updated: Milestone 3 — chroma feature extraction added.
 
 ---
 
-## Overview
-
-The audio analysis pipeline reads the music in real-time every animation frame (~60 times per second) and produces a single `audioData` object that the aurora visualization reads. All visual responses to music flow through this object.
+## Pipeline Overview
 
 ```
 <audio> element
@@ -19,9 +18,19 @@ AudioContext.destination  (speakers)
 
 Every frame:
 AnalyserNode
-    → getByteFrequencyData()   → band energy extraction (bass / mid / high)
-    → getByteTimeDomainData()  → RMS amplitude + spectral flux onset detection
-    → audioData { bass, mid, high, amplitude, isBeat, beatIntensity }
+    → getByteFrequencyData()    → chroma extraction (12 pitch class energies)
+                                → spectral brightness (timbre proxy)
+    → getByteTimeDomainData()   → RMS amplitude
+                                → spectral flux onset detection
+    → audioData {
+        chroma[12],          — energy per pitch class C through B (0.0–1.0 each)
+        dominantPitch,       — index of highest energy pitch class (0–11)
+        secondaryPitches[],  — indices of next 1–2 most active pitch classes
+        amplitude,           — RMS amplitude (0.0–1.0)
+        spectralBrightness,  — proxy for timbre brightness (0.0–1.0)
+        isBeat,              — true only on onset detection frame
+        beatIntensity,       — decaying intensity value post-onset
+      }
 ```
 
 ---
@@ -29,140 +38,158 @@ AnalyserNode
 ## AnalyserNode Configuration
 
 ### fftSize: 2048
-- Produces **1024 frequency bins**
-- Bin resolution ≈ 21.5 Hz per bin (at 44100 Hz sample rate)
-- Chosen for good frequency resolution without excessive CPU cost
-- Higher values (4096, 8192) give finer detail but at a performance cost not justified at this stage
+1024 frequency bins. Bin resolution ≈ 21.5 Hz per bin at 44100 Hz. Chosen for good frequency resolution without excessive CPU cost.
 
 ### smoothingTimeConstant: 0.3
-- Blends each frame's FFT result with the previous frame
-- Formula: `output = (smoothing × previous) + ((1 - smoothing) × current)`
-- **Why 0.3 and not the default 0.8:**
-  - 0.8 was too high for dense/compressed music — bass bins stay near ceiling (~0.9+) and never drop far enough between kicks for threshold-based detection to work
-  - 0.3 lets transients come through clearly while still smoothing single-frame noise
-  - Can be raised toward 0.5–0.6 in Milestone 3 if visuals feel jittery
+Low enough to let transients through clearly — important for onset detection. May be raised to 0.5 in M3 tuning if visuals feel jittery.
 
 ---
 
-## Frequency Band Extraction
+## Chroma Feature Extraction
 
-`getByteFrequencyData()` fills a `Uint8Array[1024]` with magnitude values (0–255) per bin every frame. We divide the spectrum into three bands:
+### What Chroma Is
 
-| Band | Bins | Approx. Frequency Range | Musical Content |
-|---|---|---|---|
-| **Bass** | 0–10 | 0–215 Hz | Kick drum, bass guitar, low synth, double bass |
-| **Mid** | 11–100 | 215–2150 Hz | Vocals, guitar, piano, snare, most melody |
-| **High** | 101–512 | 2150–11025 Hz | Hi-hats, cymbals, air, sibilance, high harmonics |
+Chroma features represent the energy present at each of the 12 musical pitch classes (C, C#, D, D#, E, F, F#, G, G#, A, A#, B) regardless of octave. A chroma vector tells us *which notes* are active in the music at any moment, without caring about which octave they're in.
 
-Each band is normalized to **0.0–1.0** by averaging bin values and dividing by 255.
+This is the foundation of the pitch-to-color system. It is what makes the visualization work across all musical genres — we don't need to detect specific notes or chords explicitly, we simply measure which pitch classes are most energetically present each frame.
 
-**Note:** The top of the high band (bin 512) reaches ~11kHz, not 20kHz. Bins 513–1023 (11–22kHz) are excluded — they carry very little musical energy and would dilute the high band average without adding useful information.
+### Mapping FFT Bins to Pitch Classes
+
+Each FFT frequency bin maps to a musical pitch class using the equal temperament formula:
+
+```
+frequency = binIndex × (sampleRate / fftSize)
+            ≈ binIndex × 21.5 Hz  (at 44100 Hz)
+
+pitchClass = round(12 × log2(frequency / referenceFrequency)) mod 12
+             where referenceFrequency = 440 Hz (A4)
+```
+
+This mapping is computed once at initialization and stored as a lookup table — not recalculated every frame.
+
+### Chroma Vector
+
+The output is an array of 12 normalized values (0.0–1.0), one per pitch class:
+
+```javascript
+chroma = [
+  C_energy,   // index 0
+  Cs_energy,  // index 1  (C#)
+  D_energy,   // index 2
+  Ds_energy,  // index 3  (D#)
+  E_energy,   // index 4
+  F_energy,   // index 5
+  Fs_energy,  // index 6  (F#)
+  G_energy,   // index 7
+  Gs_energy,  // index 8  (G#)
+  A_energy,   // index 9
+  As_energy,  // index 10 (A#)
+  B_energy,   // index 11
+]
+```
+
+### Dominant and Secondary Pitch Detection
+
+Each frame, the chroma vector is sorted to find the most active pitch classes:
+
+```javascript
+dominantPitch     = argmax(chroma)           // index of highest energy
+secondaryPitch1   = argmax(chroma, exclude: dominantPitch)
+secondaryPitch2   = argmax(chroma, exclude: [dominantPitch, secondaryPitch1])
+```
+
+A minimum energy threshold (e.g. 0.15) filters out noise — pitch classes below this threshold are ignored even if they are the highest available.
+
+### Smoothing
+
+Raw chroma values can jump sharply frame-to-frame. Each pitch class energy is lerped toward its raw value at a slow rate (0.05) to prevent the dominant pitch from flickering between adjacent pitch classes during sustained chords.
+
+---
+
+## Spectral Brightness (Timbre Proxy)
+
+Timbre-color synesthesia affects saturation and lightness rather than hue. We approximate timbre brightness using the ratio of high-frequency energy to total energy:
+
+```
+spectralBrightness = sum(freqData[200..512]) / sum(freqData[0..512])
+```
+
+Higher values → brighter, more treble-heavy sound (strings, bright synths, cymbals)
+Lower values → darker, more bass-heavy sound (bass guitar, cello, kick drum)
+
+This is used in the color pipeline to modulate saturation of the rendered ribbon color.
 
 ---
 
 ## RMS Amplitude
 
-Computed from `getByteTimeDomainData()` — the raw waveform samples (0–255, where 128 = silence).
+Root Mean Square of time-domain waveform samples. Measures perceived loudness. Used to drive ribbon height, saturation swell, and the dynamics-driven ribbon origin point.
 
 ```
-sample = (rawValue - 128) / 128   ← re-centres around 0
-RMS = √( Σ(sample²) / N )         ← root mean square
+amplitude = √( Σ((sample - 128)² / 128²) / N )
 ```
-
-RMS correlates with perceived loudness more accurately than peak amplitude. It captures the overall energy of the signal rather than just its highest point in a given frame.
 
 ---
 
-## Onset Detection — Spectral Flux
+## Spectral Flux Onset Detection
 
-### Why Not Simple Bass Threshold (Kick Detection)?
+### Why Spectral Flux
 
-The original Milestone 2 implementation used a **delta method** on bass energy — detecting sharp upward spikes in the bass frequency band. This works well for music where the kick drum is the rhythmic anchor (pop, electronic, hip-hop) but fails for:
+The original Milestone 2 delta method watched for bass energy spikes — essentially a kick drum detector. This fails on classical, jazz, acoustic, and ambient music.
 
-- **Classical** — no kick drum; bass energy is sustained, not spiked
-- **Jazz** — rhythm lives in hi-hat and ride cymbal (high frequencies)
-- **Acoustic / folk** — guitar strums create mid-frequency pulses
-- **Ambient / drone** — no clear transient events at all
-- **Orchestral** — rhythmic pulse may be in strings, brass, or timpani
+Spectral flux measures the total positive change in the entire frequency spectrum between consecutive frames. Any sudden increase anywhere — kick drum, piano attack, guitar strum, brass hit — contributes to the flux value.
 
-A kick-drum detector is not a beat detector — it is a bass-transient detector. For a chromesthesia visualizer that aims to work across all genres, this is too narrow.
-
-### Spectral Flux — How It Works
-
-**Spectral flux** measures the total change in the frequency spectrum between consecutive frames. Instead of watching one band, it watches everything simultaneously.
+### How It Works
 
 ```
 flux = Σ max(0, freqData[i] - previousFreqData[i])   for all bins i
 ```
 
-- Only **positive** changes are counted (HWR — Half-Wave Rectification)
-- A sudden increase anywhere in the spectrum contributes to the flux value
-- A kick drum, a piano attack, a guitar strum, a brass hit — all produce spectral flux
-
-**Onset fires when:**
-1. `flux > dynamicThreshold` — flux exceeds a locally-computed threshold
-2. A minimum cooldown period has elapsed (prevents double-triggering)
-
-**Dynamic threshold:**
-Rather than a fixed threshold, we maintain a **rolling median** of recent flux values and set the threshold as a multiple of that median. This adapts to the overall energy level of the track — a quiet classical passage and a loud electronic drop both get appropriate sensitivity.
-
-```
-dynamicThreshold = rollingMedian(recentFluxValues) × THRESHOLD_MULTIPLIER
-```
+An onset fires when flux exceeds a dynamic threshold (rolling median × multiplier) and a minimum cooldown has elapsed.
 
 ### Parameters
 
 | Parameter | Value | Notes |
 |---|---|---|
-| `FLUX_HISTORY_SIZE` | 43 frames | ~700ms of history at 60fps — enough to establish local median |
-| `FLUX_THRESHOLD_MULTIPLIER` | 1.5 | Onset fires when flux is 1.5× the recent median. Tune up to reduce false positives, down to catch quieter onsets |
-| `ONSET_COOLDOWN_MS` | 100ms | Minimum gap between onsets. 100ms = max ~10 onsets/second, sufficient for fast passages |
-| `ONSET_DECAY` | 0.88 | Per-frame decay of `beatIntensity`. Halves in ~5 frames (~83ms at 60fps) |
-
-### Compared to the Previous Delta Method
-
-| | Delta Method (removed) | Spectral Flux (current) |
-|---|---|---|
-| **Works on** | Bass-heavy, uncompressed music | All genres |
-| **Detects** | Bass transients (kick drums) | Any musical onset |
-| **Fails on** | Classical, jazz, acoustic, ambient | Extremely gradual swells (by design — no onset = no onset event) |
-| **Complexity** | Low | Medium |
-| **Tuning** | Single threshold | Threshold multiplier + history window |
+| `FLUX_HISTORY_SIZE` | 43 frames | ~700ms of history |
+| `FLUX_THRESHOLD_MULTIPLIER` | 1.5 | Tune up for fewer triggers, down for more |
+| `ONSET_COOLDOWN_MS` | 100ms | Max ~10 onsets/second |
+| `ONSET_DECAY` | 0.88 | beatIntensity halves in ~5 frames |
 
 ---
 
 ## The audioData Object
 
-Written every frame by `updateAudioData()`, read by the aurora render loop.
+Written every frame by `updateAudioData()`, read by the ribbon system and render loop.
 
 ```javascript
 audioData = {
-  bass:          0.0–1.0,   // normalized bass band energy
-  mid:           0.0–1.0,   // normalized mid band energy
-  high:          0.0–1.0,   // normalized high band energy
-  amplitude:     0.0–1.0,   // RMS amplitude (overall loudness)
-  isBeat:        boolean,   // true only on the frame an onset is detected
-  beatIntensity: 0.0–1.0,   // decaying intensity value — 1.0 on onset, fades to 0
+  chroma:             Float32Array(12),  // pitch class energies, 0.0–1.0
+  dominantPitch:      0–11,              // pitch class index with most energy
+  secondaryPitches:   [0–11, 0–11],      // next 1–2 most active pitch classes
+  amplitude:          0.0–1.0,           // RMS loudness
+  spectralBrightness: 0.0–1.0,           // timbre brightness proxy
+  isBeat:             boolean,           // true on onset detection frame only
+  beatIntensity:      0.0–1.0,           // decaying post-onset intensity
 }
 ```
 
-**Idle fallback** (when paused or not yet loaded):
-```javascript
-{ bass: 0.08, mid: 0.04, high: 0.02, amplitude: 0.04, isBeat: false, beatIntensity: 0.0 }
-```
-Non-zero idle values keep the aurora in slow ambient animation rather than freezing.
+### Idle Fallback
+
+When paused or not yet loaded, audioData uses safe idle values so the aurora continues ambient animation rather than freezing. Chroma defaults to a gentle equal distribution across all pitch classes at low energy.
 
 ---
 
-## How audioData Maps to Visuals (Milestone 3)
+## How audioData Maps to Visuals
 
-| audioData field | Aurora behavior |
+| audioData field | Visual behavior |
 |---|---|
-| `bass` | Low zone brightness + size |
-| `mid` | Mid zone color saturation |
-| `high` | High zone movement speed |
-| `amplitude` | Global saturation swell |
-| `beatIntensity` | Pulse flash intensity across all zones |
+| `dominantPitch` | Primary ribbon hue via profile lookup |
+| `secondaryPitches` | Secondary ribbon hues + glow gradient tint |
+| `chroma` | Weighted blend for background glow color |
+| `amplitude` | Ribbon height, saturation swell, origin fade point |
+| `spectralBrightness` | Saturation modifier in color pipeline |
+| `beatIntensity` | Brightness pulse across all ribbons |
 | `isBeat` | Triggers onset flash event |
 
 ---
@@ -171,12 +198,12 @@ Non-zero idle values keep the aurora in slow ambient animation rather than freez
 
 | Question | Status | Notes |
 |---|---|---|
-| smoothingTimeConstant tuning | 🔲 Revisit in M3 | May raise to 0.5 if visuals feel jittery |
-| Flux threshold multiplier tuning | 🔲 Revisit in M3 | Test across genres — classical especially |
-| Per-band onset detection | 🔲 Future | Could fire separate onset events per band for richer visual response |
-| Tempo estimation | 🔲 Future | Inter-onset interval could estimate BPM for animation speed |
+| smoothingTimeConstant tuning | 🔲 Revisit M3 | May raise to 0.5 if chroma flickers |
+| Chroma smoothing lerp rate | 🔲 Tune in M3 | Start at 0.05 — adjust based on dominant pitch stability |
+| Minimum chroma threshold | 🔲 Tune in M3 | Start at 0.15 — prevents noise from driving color |
+| Per-band onset detection | 🔲 Future | Could fire separate events per frequency zone |
+| Tempo estimation | 🔲 Future | Inter-onset intervals could estimate BPM |
 
 ---
 
-*Last updated: Milestone 2 revision — spectral flux replaces delta beat detection*
-*See also: `README.md`, `docs/visual-design.md`*
+*See also: `README.md`, `docs/visual-design.md`, `docs/research.md`*
