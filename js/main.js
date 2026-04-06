@@ -6,10 +6,10 @@
 // Milestone 2: Web Audio API integration — real-time frequency extraction,
 //              amplitude tracking, spectral flux onset detection. All values
 //              collected into a single `audioData` object each frame.
-// Milestone 3: audioData connected to aurora visuals via a smoothed
-//              visualState object. The aurora now responds to music in
-//              real-time — thickness, speed, opacity, and wave height are
-//              all modulated by frequency band energy and beat intensity.
+// Milestone 3: Full rebuild — chroma feature extraction (12 pitch class
+//              energies per frame), dominant/secondary pitch detection,
+//              spectral brightness. audioData expanded with pitch-driven
+//              fields. Aurora rendering rebuild follows in next steps.
 //
 // Architecture overview:
 //   loadAudioFile()
@@ -375,7 +375,7 @@ function drawFrame() {
 
 
 // =============================================================================
-// AUDIO ANALYSIS (Milestone 2)
+// AUDIO ANALYSIS (Milestones 2–3)
 // =============================================================================
 //
 // Web Audio API pipeline:
@@ -397,6 +397,36 @@ function drawFrame() {
 // ================================
 // AUDIO ANALYSIS — CONSTANTS
 // ================================
+
+// --- Pitch class names ---
+// Human-readable labels for the 12 pitch classes (index 0 = C, index 11 = B).
+// Used for debug logging and future profile system display.
+const PITCH_CLASS_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+// --- Chroma Feature Extraction ---
+//
+// Chroma features represent the energy at each of the 12 musical pitch classes
+// (C, C#, D ... B) regardless of which octave they appear in. A chroma vector
+// tells us which notes are active in the music right now — without needing
+// explicit chord or note detection. Every octave of C contributes to chroma[0],
+// every octave of A contributes to chroma[9], and so on.
+//
+// This is the foundation of the pitch-to-color system. We measure which pitch
+// classes are most energetically present, look them up in the active synesthete
+// profile, and drive the ribbon colors from that. It works across all genres
+// because it is agnostic to instrument, octave, and timbre.
+
+// Minimum chroma energy for a pitch class to be considered "active".
+// Pitch classes below this are filtered out as noise — they exist in the FFT
+// but at such low levels that treating them as audible notes would produce
+// spurious color changes. 0.15 = 15% average fractional FFT energy per bin.
+const CHROMA_MIN_ENERGY = 0.15;
+
+// Per-frame lerp rate for smoothing raw chroma toward the persistent
+// smoothedChroma array. Slow enough (0.05) to prevent the dominant pitch from
+// flickering between adjacent pitch classes during sustained chords or legato
+// passages, while still responding to real harmonic changes within a second.
+const CHROMA_LERP_RATE = 0.05;
 
 // --- Spectral Flux Onset Detection ---
 //
@@ -437,12 +467,22 @@ const ONSET_DECAY = 0.88;
 // Idle fallback values used when no audio is playing.
 // Non-zero so the aurora continues its ambient animation (not frozen).
 const IDLE_AUDIO_DATA = {
-  bass:          0.08,
-  mid:           0.04,
-  high:          0.02,
-  amplitude:     0.04,
-  isBeat:        false,
-  beatIntensity: 0.0,
+  // Idle chroma: equal low energy across all 12 pitch classes.
+  // Non-zero gives the aurora a subtle ambient tint even when paused.
+  chroma:             new Float32Array(12).fill(0.05),
+  dominantPitch:      -1,    // -1 = no active pitch above threshold
+  secondaryPitches:   [],
+  amplitude:          0.04,
+  spectralBrightness: 0.3,
+  isBeat:             false,
+  beatIntensity:      0.0,
+  // --- Legacy band energies (backward compatibility) ---
+  // updateVisualState() still reads bass/mid/high from audioData.
+  // These will be removed when the rendering section is rebuilt in the
+  // next step of the M3 rebuild.
+  bass:  0.08,
+  mid:   0.04,
+  high:  0.02,
 };
 
 
@@ -478,8 +518,30 @@ let lastOnsetTime = 0;
 let beatIntensityInternal = 0;
 
 // The global audioData object — written by updateAudioData() every frame,
-// read by the aurora render loop (and in Milestone 3, by the color pipeline).
+// read by the aurora render loop and (from M3) by the color pipeline.
 let audioData = { ...IDLE_AUDIO_DATA };
+
+// --- Chroma state ---
+
+// Bin-to-pitch-class lookup table — maps each FFT bin index to a pitch class
+// index (0–11) or -1 if the bin falls outside the useful musical frequency
+// range (~60–4200 Hz). Built once in initAudioContext() because it requires
+// the AudioContext's actual sampleRate, which varies by browser and device.
+let binToPitchClass = null;   // Int8Array[1024], allocated in initAudioContext()
+
+// Smoothed chroma vector — lerped toward raw chroma each frame at CHROMA_LERP_RATE.
+// Initialised to 0.05 (the idle level) so the aurora starts in its ambient state.
+// Persistent across frames — never reallocated — so lerp continuity is preserved.
+const smoothedChroma = new Float32Array(12).fill(0.05);
+
+// Scratch arrays for computeChroma() — pre-allocated at module load to avoid
+// creating new typed arrays on every frame, which would trigger garbage collection
+// 60 times per second and cause stuttering.
+const chromaSums   = new Float32Array(12);   // accumulated magnitude sum per pitch class
+const chromaCounts = new Int32Array(12);     // number of contributing FFT bins per pitch class
+
+// Timestamp of the last debug log line — throttles console output to once/second.
+let debugLastLogTime = 0;   // DEBUG — remove after testing
 
 
 // ================================
@@ -530,6 +592,39 @@ function initAudioContext() {
   previousFreqData = new Uint8Array(analyser.frequencyBinCount);
   // timeDomainData length = fftSize = 2048
   timeData         = new Uint8Array(analyser.fftSize);
+
+  // --- Build bin-to-pitch-class lookup table ---
+  //
+  // Maps each FFT bin index to a pitch class (0–11) using equal temperament,
+  // or -1 if the bin is outside the musically useful frequency range.
+  //
+  // Formula (equal temperament, A4 = 440 Hz as reference):
+  //   semitones = 12 × log2(frequency / 440)
+  //   pitchClass = ((round(semitones) + 9) mod 12 + 12) mod 12
+  //
+  //   The +9 offset adjusts from A-relative (semitones=0 → A) to
+  //   C-relative (index 0 → C). The double-mod-and-add-12 ensures the
+  //   result is always positive — JavaScript's % can return negatives.
+  //
+  // Built here (not at module load) because sampleRate is only known after
+  // AudioContext creation — browsers may use 44100 or 48000 Hz.
+  //
+  // Excluded frequency ranges:
+  //   < 60 Hz   — sub-bass rumble; fundamental pitch too ambiguous for chroma
+  //   > 4200 Hz — above this, overtone harmonics dominate over fundamentals,
+  //               making chroma detection unreliable for pitch-class assignment
+  binToPitchClass = new Int8Array(analyser.frequencyBinCount).fill(-1);
+  const binHz = audioCtx.sampleRate / analyser.fftSize;   // Hz per FFT bin
+
+  for (let i = 0; i < analyser.frequencyBinCount; i++) {
+    const freq = i * binHz;
+    if (freq < 60 || freq > 4200) continue;   // outside useful musical pitch range
+
+    // log2(freq/440) gives distance in octaves from A4.
+    // × 12 converts to semitones. Round to nearest semitone.
+    const semitones = 12 * Math.log2(freq / 440);
+    binToPitchClass[i] = ((Math.round(semitones) + 9) % 12 + 12) % 12;
+  }
 }
 
 
@@ -580,6 +675,118 @@ function getRMSAmplitude(data) {
     sumOfSquares += sample * sample;
   }
   return Math.sqrt(sumOfSquares / data.length);
+}
+
+
+// ================================
+// AUDIO ANALYSIS — CHROMA FEATURE EXTRACTION
+//
+// Computes a 12-element chroma vector from the current FFT frame.
+// Each element is the normalized average energy present at one pitch class
+// (C, C#, D ... B) across all contributing FFT bins in the valid range.
+//
+// The bin-to-pitch-class lookup table (binToPitchClass) was built in
+// initAudioContext() and does the heavy mapping work. This function simply
+// accumulates magnitudes into 12 buckets and normalizes.
+//
+// Normalization: each pitch class sum is divided by (binCount × 255), giving
+// average fractional magnitude per bin — comparable across pitch classes and
+// meaningful as an absolute energy measure (0.0 = silence, 1.0 = all bins
+// in that pitch class at maximum FFT magnitude).
+//
+// Uses pre-allocated scratch arrays (chromaSums, chromaCounts) to avoid
+// any heap allocation on the hot path.
+// ================================
+
+function computeChroma(data) {
+  // Clear scratch arrays — these are reused every frame.
+  chromaSums.fill(0);
+  chromaCounts.fill(0);
+
+  // Accumulate raw FFT magnitudes (0–255) per pitch class.
+  for (let i = 0; i < data.length; i++) {
+    const pc = binToPitchClass[i];
+    if (pc < 0) continue;   // bin outside valid musical range
+    chromaSums[pc]   += data[i];
+    chromaCounts[pc] += 1;
+  }
+
+  // Normalize each pitch class to 0.0–1.0.
+  // Dividing by (count × 255) gives average fractional magnitude per bin,
+  // so a pitch class with few bins and a pitch class with many bins are
+  // directly comparable.
+  const chroma = new Float32Array(12);
+  for (let pc = 0; pc < 12; pc++) {
+    chroma[pc] = chromaCounts[pc] > 0
+      ? chromaSums[pc] / (chromaCounts[pc] * 255)
+      : 0;
+  }
+  return chroma;
+}
+
+
+// ================================
+// AUDIO ANALYSIS — DOMINANT PITCH DETECTION
+//
+// Finds the dominant and secondary pitch classes from the smoothed chroma
+// vector. Only pitch classes above CHROMA_MIN_ENERGY are considered — those
+// below the threshold are noise and should not drive color changes.
+//
+// Returns:
+//   dominantPitch    — index (0–11) of highest energy pitch class, or -1
+//   secondaryPitches — array of the next 1–2 qualifying pitch class indices
+// ================================
+
+function getDominantPitches(chroma) {
+  // Build a list of candidates that meet the minimum energy threshold,
+  // sorted by energy descending.
+  const candidates = [];
+  for (let i = 0; i < 12; i++) {
+    if (chroma[i] >= CHROMA_MIN_ENERGY) {
+      candidates.push({ pitch: i, energy: chroma[i] });
+    }
+  }
+  candidates.sort((a, b) => b.energy - a.energy);
+
+  // Dominant: top candidate, or -1 if nothing meets the threshold.
+  // -1 signals the renderer to stay in idle/ambient color mode.
+  const dominantPitch = candidates.length > 0 ? candidates[0].pitch : -1;
+
+  // Secondary: next 1–2 qualifying pitch classes (up to 2 secondary ribbons).
+  const secondaryPitches = candidates.slice(1, 3).map(c => c.pitch);
+
+  return { dominantPitch, secondaryPitches };
+}
+
+
+// ================================
+// AUDIO ANALYSIS — SPECTRAL BRIGHTNESS
+//
+// A simple proxy for timbre brightness — how "bright" or "dark" the current
+// sound is. Computed as the ratio of high-frequency energy (bins 200–512,
+// ≈4300–11000 Hz) to total energy (bins 0–512).
+//
+// Higher values → bright, treble-heavy sounds (bright strings, cymbals,
+//                                               bright synth pads, sibilance)
+// Lower values  → dark, bass-heavy sounds (cello, bass guitar, kick drum,
+//                                          muted piano, warm pads)
+//
+// Per the research, timbre modifies *saturation and lightness* of a synesthete's
+// color — not the hue itself. This value feeds the saturation modifier in
+// the color pipeline (Milestone 3 visual rebuild).
+// ================================
+
+function computeSpectralBrightness(data) {
+  let totalEnergy = 0;
+  let highEnergy  = 0;
+
+  for (let i = 0; i <= 512; i++) {
+    totalEnergy += data[i];
+    if (i >= 200) highEnergy += data[i];   // upper bins only
+  }
+
+  // Guard against division by zero during silence.
+  return totalEnergy > 0 ? highEnergy / totalEnergy : 0;
 }
 
 
@@ -661,22 +868,37 @@ function detectOnset(currentFreqData) {
 // ================================
 // AUDIO ANALYSIS — UPDATE (called every frame from drawFrame)
 //
-// Reads the latest FFT and time-domain data from the AnalyserNode,
-// extracts the three band energies, computes RMS amplitude, runs beat
-// detection, and writes everything into the global `audioData` object.
+// Reads the latest FFT and time-domain data from the AnalyserNode, runs
+// all analysis functions, and writes results into the global audioData object.
 //
-// Falls back to IDLE_AUDIO_DATA when audio is paused or not yet set up,
-// so the aurora continues its ambient animation rather than freezing.
+// New in M3: chroma extraction, dominant pitch detection, spectral brightness.
+// Kept from M2: RMS amplitude, spectral flux onset detection, band energies.
+//
+// Falls back to idle values when paused or not yet loaded, so the aurora
+// continues its ambient animation rather than freezing.
 // ================================
 
 function updateAudioData() {
   // No analyser yet (first file not loaded), or audio is paused — use idle values.
+  // Lerp smoothedChroma toward idle level so colors fade gracefully on pause.
   // Let beatIntensity continue to decay so a beat flash doesn't freeze on pause.
   if (!analyser || audioPlayer.paused) {
     beatIntensityInternal *= ONSET_DECAY;
+    for (let i = 0; i < 12; i++) {
+      smoothedChroma[i] = lerp(smoothedChroma[i], 0.05, CHROMA_LERP_RATE);
+    }
     audioData = {
-      ...IDLE_AUDIO_DATA,
-      beatIntensity: beatIntensityInternal,
+      chroma:             smoothedChroma,
+      dominantPitch:      -1,
+      secondaryPitches:   [],
+      amplitude:          0.04,
+      spectralBrightness: 0.3,
+      isBeat:             false,
+      beatIntensity:      beatIntensityInternal,
+      // Legacy band energies — kept for updateVisualState() backward compat.
+      bass:  0.08,
+      mid:   0.04,
+      high:  0.02,
     };
     return;
   }
@@ -687,21 +909,70 @@ function updateAudioData() {
   // Read current waveform samples into timeData (0–255, 128 = silence)
   analyser.getByteTimeDomainData(timeData);
 
-  // Extract normalised (0.0–1.0) energy per frequency band
+  // --- Chroma extraction ---
+  // Compute raw chroma from this frame's FFT data, then lerp smoothedChroma
+  // toward the raw values. The renderer always reads smoothedChroma — never
+  // raw — to prevent flickering on rapid harmonic changes.
+  const rawChroma = computeChroma(freqData);
+  for (let i = 0; i < 12; i++) {
+    smoothedChroma[i] = lerp(smoothedChroma[i], rawChroma[i], CHROMA_LERP_RATE);
+  }
+
+  // Detect dominant and secondary pitch classes from smoothed chroma.
+  const { dominantPitch, secondaryPitches } = getDominantPitches(smoothedChroma);
+
+  // --- Spectral brightness (timbre proxy) ---
+  // Ratio of high-frequency energy to total energy. Feeds the saturation
+  // modifier in the color pipeline (brighter sound → more saturated color).
+  const spectralBrightness = computeSpectralBrightness(freqData);
+
+  // --- Legacy band energies (backward compat with updateVisualState) ---
   const bass = getBandEnergy(freqData, 0,   10);
   const mid  = getBandEnergy(freqData, 11,  100);
   const high = getBandEnergy(freqData, 101, 512);
 
-  // Overall loudness via RMS
+  // --- RMS amplitude ---
   const amplitude = getRMSAmplitude(timeData);
 
-  // Onset detection via spectral flux — passes the full frequency array,
-  // not just a single band value, so all instrument attacks are captured.
+  // --- Onset detection ---
   const { isBeat, beatIntensity } = detectOnset(freqData);
 
+  // --- DEBUG: throttled console logging (once per second) ---
+  // Remove this entire block before the next milestone.
+  const debugNow = performance.now();   // DEBUG
+  if (debugNow - debugLastLogTime >= 1000) {   // DEBUG
+    debugLastLogTime = debugNow;   // DEBUG
+    const rawStr  = Array.from(rawChroma).map(v => v.toFixed(3)).join(', ');   // DEBUG
+    const smthStr = Array.from(smoothedChroma).map(v => v.toFixed(3)).join(', ');   // DEBUG
+    const domName = dominantPitch >= 0 ? PITCH_CLASS_NAMES[dominantPitch] : '(none)';   // DEBUG
+    const secNames = secondaryPitches.length > 0   // DEBUG
+      ? secondaryPitches.map(p => `${p}(${PITCH_CLASS_NAMES[p]})`).join(', ')   // DEBUG
+      : '(none)';   // DEBUG
+    console.log(`[Chroma raw]      ${rawStr}`);   // DEBUG
+    console.log(`[Chroma smoothed] ${smthStr}`);   // DEBUG
+    console.log(`[Pitch]           dominant: ${dominantPitch} (${domName}) | secondary: ${secNames}`);   // DEBUG
+    console.log(`[Brightness]      spectralBrightness: ${spectralBrightness.toFixed(3)}`);   // DEBUG
+  }   // DEBUG
+  if (isBeat) {   // DEBUG
+    console.log(`🎵 ONSET — beatIntensity: ${beatIntensity.toFixed(3)}`);   // DEBUG
+  }   // DEBUG
+  // END DEBUG
+
   // Write all values into the shared audioData object.
-  // The aurora renderer reads this object next frame (Milestone 3 will act on it).
-  audioData = { bass, mid, high, amplitude, isBeat, beatIntensity };
+  audioData = {
+    chroma:             smoothedChroma,
+    dominantPitch,
+    secondaryPitches,
+    amplitude,
+    spectralBrightness,
+    isBeat,
+    beatIntensity,
+    // Legacy band energies — kept for updateVisualState() backward compat.
+    // Will be removed when the rendering section is rebuilt.
+    bass,
+    mid,
+    high,
+  };
 }
 
 
