@@ -4,56 +4,94 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Synesthesia</title>
+
+  <!-- Preconnect hints tell the browser to open the TCP/TLS connection to
+       Google's font servers early, before the stylesheet is even parsed.
+       This shaves ~100–300ms off font load time on cold visits. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <!-- Plus Jakarta Sans — humanist sans-serif, chosen for its warmth and
+       legibility at light weights on dark backgrounds. Weights 300/400/500
+       cover all UI text in the app. display=swap prevents invisible text
+       during font load (falls back to system-ui, then swaps when ready). -->
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
+  <!-- The aurora canvas sits at z-index 0, behind all overlays.
+       Its pixel dimensions are set and kept in sync with the viewport
+       by resizeCanvas() in main.js. CSS width/height 100% only scales
+       the element — actual resolution is set via canvas.width/height. -->
   <canvas id="aurora-canvas"></canvas>
 
-  <!-- Landing overlay — visible before a track is loaded -->
+  <!-- =====================================================================
+       LANDING OVERLAY
+       Shown on initial load, before any audio file is selected.
+       Hidden (via .hidden class) once a file is loaded in main.js.
+       ===================================================================== -->
   <div id="landing">
     <div class="landing-content">
+
       <h1 class="app-title">Synesthesia</h1>
+
       <p class="app-tagline">
         A music visualizer inspired by chromesthesia —<br>
         the neurological phenomenon where sound becomes color.
       </p>
+
+      <!-- The <label> acts as a styled button that triggers the hidden
+           <input type="file"> inside it. No JavaScript needed for the click. -->
       <label class="upload-btn" for="audio-upload">
         <span>Choose a track</span>
+        <!-- accept= restricts the OS file picker to audio formats only.
+             Does not prevent drag-and-drop of other types — validation
+             would need to be added in JS if that's a concern later. -->
         <input
           type="file"
           id="audio-upload"
           accept=".mp3,.wav,.ogg,.aiff,.aif,.flac,.m4a,.aac"
         >
       </label>
+
+      <!-- Subtitle hint listing accepted formats for clarity -->
       <p class="upload-hint">mp3 &middot; wav &middot; ogg &middot; aiff &middot; flac &middot; m4a</p>
+
     </div>
   </div>
 
-  <!-- Controls bar — always visible once a track is loaded -->
+  <!-- =====================================================================
+       CONTROLS BAR
+       Hidden initially (.hidden). Shown by main.js once a file is loaded.
+       Always visible during playback — no hover reveal in Milestone 1/2.
+       ===================================================================== -->
   <div id="controls" class="hidden">
     <div class="controls-inner">
 
+      <!-- Left: track display name (file extension stripped in main.js) -->
       <div class="controls-left">
         <span id="track-name">No track loaded</span>
       </div>
 
+      <!-- Centre: play/pause toggle button.
+           Two SVG icons are overlaid; main.js swaps .hidden between them
+           to reflect playback state. aria-label provides accessibility. -->
       <div class="controls-center">
         <button id="play-pause-btn" disabled aria-label="Play/Pause">
-          <!-- Play icon -->
+          <!-- Play icon (triangle) — visible when paused -->
           <svg id="icon-play" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
             <path d="M8 5v14l11-7z"/>
           </svg>
-          <!-- Pause icon -->
+          <!-- Pause icon (two bars) — visible when playing -->
           <svg id="icon-pause" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="22" height="22" class="hidden">
             <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
           </svg>
         </button>
       </div>
 
+      <!-- Right: load a different track without returning to the landing screen -->
       <div class="controls-right">
         <label class="change-track-btn" for="audio-upload-controls">
           Change track
@@ -68,7 +106,13 @@
     </div>
   </div>
 
+  <!-- Hidden <audio> element — the media source for the Web Audio API.
+       No controls attribute: playback is managed entirely by main.js.
+       The AudioContext taps this element via createMediaElementSource(). -->
   <audio id="audio-player"></audio>
+
+  <!-- main.js loaded at end of body so the DOM is fully parsed before
+       the script runs. No defer/async needed here. -->
   <script src="js/main.js"></script>
 
 </body>

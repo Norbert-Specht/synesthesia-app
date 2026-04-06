@@ -1,63 +1,129 @@
+/* =============================================================================
+   SYNESTHESIA APP — style.css
+   =============================================================================
+   Structure:
+     1. Design tokens (:root custom properties)
+     2. Base & reset
+     3. Canvas
+     4. Landing overlay
+     5. Controls bar
+   ============================================================================= */
+
+
 /* ================================
-   BASE & RESET
+   1. DESIGN TOKENS
+   ================================
+   All colours, the font stack, and the controls height live here as custom
+   properties so they can be updated in one place and referenced everywhere.
    ================================ */
+
+:root {
+  /* Deep near-black with a very slight blue cast — feels like a night sky
+     rather than flat black. Used as the canvas background. */
+  --bg:              #060810;
+
+  /* Primary text: slightly cool white — warmer than #ffffff, avoids harshness
+     against the dark background. */
+  --text-primary:    #eef2ff;
+
+  /* Secondary text: muted blue-grey for less prominent labels (track name,
+     format hint, change-track button). */
+  --text-secondary:  #6b7fa3;
+
+  /* Electric cyan — the app's single accent colour. Used for borders,
+     icon colour, hover glows, and the title text-shadow. */
+  --accent:          #00e5ff;
+
+  /* Pre-mixed semi-transparent accent for glow effects without needing to
+     repeat the rgba() value everywhere. Currently unused directly but
+     available for Milestone 3 visual work. */
+  --accent-glow:     rgba(0, 229, 255, 0.18);
+
+  /* Fixed height of the controls bar. Referenced by both #controls height
+     and any future layout that needs to account for the bar's footprint. */
+  --controls-height: 72px;
+
+  /* Font stack: Plus Jakarta Sans from Google Fonts, with system-ui and
+     sans-serif as progressively wider fallbacks during font load. */
+  --font:            'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+
+/* ================================
+   2. BASE & RESET
+   ================================ */
+
+/* Box-sizing reset: border and padding are included in declared dimensions.
+   This is the most widely used reset and avoids a class of sizing surprises. */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-:root {
-  --bg:              #060810;
-  --text-primary:    #eef2ff;
-  --text-secondary:  #6b7fa3;
-  --accent:          #00e5ff;
-  --accent-glow:     rgba(0, 229, 255, 0.18);
-  --controls-height: 72px;
-  --font:            'Plus Jakarta Sans', system-ui, sans-serif;
-}
-
 html, body {
   width: 100%;
   height: 100%;
+  /* Prevent scroll bars from appearing if canvas or overlay slightly overflow */
   overflow: hidden;
   background: var(--bg);
   color: var(--text-primary);
   font-family: var(--font);
+  /* Subpixel antialiasing on macOS/Chrome — makes light text on dark
+     backgrounds crisper than the default 'auto' setting. */
   -webkit-font-smoothing: antialiased;
 }
 
+/* Utility class: used by main.js to show/hide the landing overlay,
+   controls bar, and play/pause icons. !important overrides any display
+   value set on the element so .hidden always wins. */
 .hidden {
   display: none !important;
 }
 
 
 /* ================================
-   CANVAS
+   3. CANVAS
+   ================================
+   The canvas is the bottommost layer — fixed and full-viewport.
+   CSS width/height stretch the element to fill the screen;
+   the actual pixel resolution is set separately via canvas.width/height
+   in JS (resizeCanvas()). Without the JS sizing, the canvas would render
+   at its default 300×150px and be upscaled (blurry).
    ================================ */
+
 #aurora-canvas {
   position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
+  /* block removes the default inline gap below canvas in some browsers */
   display: block;
 }
 
 
 /* ================================
-   LANDING OVERLAY
+   4. LANDING OVERLAY
+   ================================
+   Fixed overlay that sits above the canvas (z-index 10) and below the
+   controls bar (z-index 20). Semi-transparent background + backdrop-filter
+   blur let the aurora show through while making text legible.
    ================================ */
+
 #landing {
   position: fixed;
+  /* inset: 0 is shorthand for top/right/bottom/left: 0 — fills the viewport */
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10;
+  /* Dark scrim: enough opacity to make text readable without killing the aurora */
   background: rgba(6, 8, 16, 0.42);
+  /* Slight blur softens the aurora behind text — purely aesthetic */
   backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);   /* Safari prefix required */
 }
 
 .landing-content {
@@ -69,10 +135,14 @@ html, body {
 }
 
 .app-title {
+  /* clamp(min, preferred, max): fluid sizing between 3.2rem and 6.5rem
+     depending on viewport width. 9vw is the preferred mid-point. */
   font-size: clamp(3.2rem, 9vw, 6.5rem);
-  font-weight: 300;
+  font-weight: 300;   /* Light weight — gives an atmospheric, editorial feel */
   letter-spacing: 0.14em;
   color: #fff;
+  /* Layered glow: inner tight glow + outer wide ambient halo.
+     Both use the accent colour to tie the title to the cyan aurora ribbons. */
   text-shadow:
     0 0 40px rgba(0, 229, 255, 0.45),
     0 0 90px rgba(0, 229, 255, 0.18);
@@ -86,11 +156,13 @@ html, body {
   max-width: 460px;
 }
 
+/* The upload button is a <label> styled to look like a button.
+   Clicking it opens the OS file picker via the hidden <input> inside. */
 .upload-btn {
   display: inline-block;
   margin-top: 10px;
   padding: 13px 38px;
-  border: 1px solid rgba(0, 229, 255, 0.45);
+  border: 1px solid rgba(0, 229, 255, 0.45);   /* subtle accent border at rest */
   border-radius: 3px;
   font-family: var(--font);
   font-size: 0.9rem;
@@ -102,15 +174,17 @@ html, body {
 }
 
 .upload-btn:hover {
-  background: rgba(0, 229, 255, 0.07);
+  background: rgba(0, 229, 255, 0.07);   /* very faint cyan fill on hover */
   border-color: var(--accent);
   box-shadow: 0 0 24px rgba(0, 229, 255, 0.14);
 }
 
+/* Hide the native file input — the label acts as the visual trigger */
 .upload-btn input[type="file"] {
   display: none;
 }
 
+/* Muted format list below the upload button */
 .upload-hint {
   font-size: 0.72rem;
   color: rgba(107, 127, 163, 0.55);
@@ -119,8 +193,13 @@ html, body {
 
 
 /* ================================
-   CONTROLS BAR
+   5. CONTROLS BAR
+   ================================
+   Fixed bar pinned to the bottom of the viewport. Sits above the landing
+   overlay (z-index 20). Uses backdrop-filter blur for a frosted-glass
+   effect — the aurora bleeds through the bar slightly.
    ================================ */
+
 #controls {
   position: fixed;
   bottom: 0;
@@ -128,12 +207,17 @@ html, body {
   right: 0;
   height: var(--controls-height);
   z-index: 20;
+  /* Darker than the landing overlay — this is a persistent UI element,
+     not a temporary scrim, so it needs stronger contrast. */
   background: rgba(6, 8, 16, 0.78);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+  /* Hairline top border separates the bar from the canvas without
+     a hard opaque edge. Very low opacity keeps it subtle. */
   border-top: 1px solid rgba(255, 255, 255, 0.055);
 }
 
+/* Three-column flex layout: left (track name) | centre (play button) | right (change track) */
 .controls-inner {
   display: flex;
   align-items: center;
@@ -142,9 +226,11 @@ html, body {
   padding: 0 30px;
 }
 
-/* Left — track name */
+/* Left column — track name */
 .controls-left {
   flex: 1;
+  /* min-width: 0 is required for text-overflow: ellipsis to work inside
+     a flex child — without it the child ignores overflow constraints. */
   min-width: 0;
 }
 
@@ -155,12 +241,14 @@ html, body {
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis;   /* truncates long filenames with … */
   max-width: 300px;
 }
 
-/* Centre — play/pause button */
+/* Centre column — play/pause button */
 .controls-center {
+  /* flex: 0 0 auto prevents the centre column from growing or shrinking,
+     keeping the play button precisely centred regardless of track name length. */
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -187,18 +275,21 @@ html, body {
   box-shadow: 0 0 18px rgba(0, 229, 255, 0.22);
 }
 
+/* Disabled state shown before a file is loaded */
 #play-pause-btn:disabled {
   opacity: 0.28;
   cursor: not-allowed;
 }
 
-/* Right — change track */
+/* Right column — change track */
 .controls-right {
   flex: 1;
   display: flex;
   justify-content: flex-end;
 }
 
+/* Styled as plain text — low visual weight so it doesn't compete with
+   the play button. Brightens on hover to signal interactivity. */
 .change-track-btn {
   font-family: var(--font);
   font-size: 0.8rem;
@@ -213,6 +304,7 @@ html, body {
   color: var(--text-primary);
 }
 
+/* Hidden file input triggered by the label click */
 .change-track-btn input[type="file"] {
   display: none;
 }
