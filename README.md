@@ -91,7 +91,13 @@ Curated presets based on aggregate scientific data. Easy starting points for non
 - **Classic / Neutral** — balanced palette derived from Cytowic's research
 
 #### ✏️ Custom Profiles
-Users build and save their own note-to-color mappings. Stored in localStorage. Exportable/shareable (future feature).
+Users build their own profiles via a **mood-based color picker** — not a music theory exercise. The app asks 3 simple questions:
+1. Pick a color for major keys
+2. Pick a color for minor keys
+3. Pick a color for your favorite key
+
+From those 3 inputs the app interpolates the full 24-key palette. The user makes 3 decisions, the app makes 21. Profiles are stored in localStorage and will be exportable/shareable in a future milestone.
+
 
 ---
 
@@ -134,14 +140,49 @@ Users build and save their own note-to-color mappings. Stored in localStorage. E
 
 ---
 
+## Visual Design Direction
+
+The visualization is a **full-screen aurora borealis experience**. This metaphor resolves the core complexity challenge of chromesthesia (multiple simultaneous colors) elegantly and beautifully.
+
+### Core Principles
+- **Full-screen immersive** — no chrome, no distractions while music plays
+- **Fluid spatial zones** — frequency bands occupy vertical zones on screen, like aurora ribbons. Not rigid bands — breathing, overlapping, organic
+- **Translucency and blending** — colors overlap with transparency, preventing visual mud
+- **Organic movement** — Perlin noise or sine wave functions drive movement, never mechanical or abrupt
+- **Pulse on beat** — rhythm drives pulse intensity across all zones simultaneously
+
+### Frequency Band → Spatial Zone Mapping
+```
+Top of screen     ← melody / high frequencies  (bright, fast, arcing)
+Middle of screen  ← midrange / harmony          (warm, medium drift)
+Bottom of screen  ← bass / low frequencies      (deep, slow, pulsing)
+```
+
+### Color as a Pipeline
+Color is never a fixed value — it is the output of a sequential pipeline:
+```
+Base hue (from musical key / profile)
+  → shifted by timbre (instrument character)
+  → saturated/desaturated by amplitude (dynamics)
+  → brightened/darkened by pitch (frequency)
+  = final rendered color
+```
+
+See `docs/visual-design.md` for full detail.
+
+---
+
 ## Open Design Questions
 
 | Question | Status | Decision |
 |---|---|---|
 | Whose synesthesia do we visualize? | ✅ Decided | Famous profiles + Research themes + Custom profiles |
-| Visualization style (abstract blobs vs. structured) | 🔲 Open | TBD in Milestone 4 |
+| Visualization style | ✅ Decided | Full-screen aurora borealis, fluid frequency zones |
+| Custom profile complexity | ✅ Decided | 3 user inputs, app interpolates remaining 21 keys |
+| Color rendering approach | ✅ Decided | Pipeline model: key → timbre → amplitude → pitch |
 | Spotify integration scope | 🔲 Open | Stretch goal for now |
 | Mobile support priority | 🔲 Open | TBD |
+| WebGL vs Canvas | 🔲 Open | TBD in Milestone 4 — WebGL preferred for performance |
 
 ---
 
@@ -149,16 +190,16 @@ Users build and save their own note-to-color mappings. Stored in localStorage. E
 
 ```
 synesthesia-app/
-├── README.md
+├── README.md               ← You are here. Also Claude's briefing document.
 ├── index.html
 ├── css/
 │   └── style.css
 ├── js/
 │   └── main.js
 ├── assets/
-│   └── audio/
+│   └── audio/              ← Test audio files
 └── docs/
-    └── research.md
+    └── research.md         ← Extended synesthesia research notes
 ```
 
 ---
