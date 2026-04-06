@@ -120,7 +120,7 @@ RGB and hex are output formats, not design tools. All internal color logic uses 
 |---|---|---|
 | **Slow drift** | Continuous, Perlin noise | Gentle horizontal/vertical movement of color fields. Always active. |
 | **Harmonic pulse** | Chord changes | Gradual bloom and fade as harmony shifts |
-| **Beat pulse** | Beat detection | Sharp but smooth intensity spike on each detected beat, fades quickly |
+| **Onset pulse** | Spectral flux onset detection | Sharp but smooth intensity spike on any detected musical onset (kick, snare, strum, piano hit — any instrument), fades quickly |
 | **Dynamic swell** | Amplitude envelope | Overall brightness/saturation swells with volume |
 | **Transient flash** | Attack transients | Brief brightness spike on sharp note attacks (percussive sounds) |
 
@@ -202,5 +202,5 @@ The target aesthetic sits at the intersection of:
 
 ---
 
-*Last updated: Milestone 1 planning phase*
+*Last updated: Milestone 2 — spectral flux onset detection added*
 *See also: `README.md`, `docs/research.md`*
