@@ -22,7 +22,7 @@ The app is built as a learning project in collaboration with Claude (Anthropic),
 ## Tech Stack
 
 - **HTML / CSS / JavaScript** — vanilla, no framework
-- **Web Audio API** — real-time audio analysis (frequency, amplitude, beat detection)
+- **Web Audio API** — real-time audio analysis (frequency, amplitude, onset detection via spectral flux)
 - **Canvas API** — animated color visualizations
 - **GitHub** — version control and collaboration
 - **Vercel or Netlify** — deployment (TBD)
@@ -104,16 +104,17 @@ From those 3 inputs the app interpolates the full 24-key palette. The user makes
 ## Feature Roadmap
 
 ### Milestone 1 — Foundation
-- [ ] Project structure and file setup
-- [ ] GitHub repo initialized
-- [ ] Audio file upload and basic playback
-- [ ] README and docs in place
+- [x] Project structure and file setup
+- [x] GitHub repo initialized
+- [x] Audio file upload and basic playback
+- [x] README and docs in place
 
 ### Milestone 2 — Audio Analysis
-- [ ] Web Audio API integration
-- [ ] Real-time frequency extraction
-- [ ] Amplitude tracking
-- [ ] Basic beat detection
+- [x] Web Audio API integration
+- [x] Real-time frequency extraction (bass / mid / high bands)
+- [x] Amplitude tracking (RMS)
+- [x] Onset detection via spectral flux (replaces kick-drum-only bass detection)
+- [x] `audioData` object exposed to render loop each frame
 
 ### Milestone 3 — Color Mapping
 - [ ] Profile data structure defined
@@ -180,6 +181,7 @@ See `docs/visual-design.md` for full detail.
 | Visualization style | ✅ Decided | Full-screen aurora borealis, fluid frequency zones |
 | Custom profile complexity | ✅ Decided | 3 user inputs, app interpolates remaining 21 keys |
 | Color rendering approach | ✅ Decided | Pipeline model: key → timbre → amplitude → pitch |
+| Onset / beat detection method | ✅ Decided | Spectral flux — detects all musical onsets across full spectrum, not kick-drum only |
 | Spotify integration scope | 🔲 Open | Stretch goal for now |
 | Mobile support priority | 🔲 Open | TBD |
 | WebGL vs Canvas | 🔲 Open | TBD in Milestone 4 — WebGL preferred for performance |
