@@ -1123,9 +1123,10 @@ function updateAudioData() {
   // --- Amplitude (via Meyda RMS) ---
   // Meyda's rms value is already 0.0–1.0 — no normalization needed.
   // Falls back to 0.04 (idle level) before the first Meyda callback fires.
-  const amplitude = latestMeydaFeatures
-    ? latestMeydaFeatures.rms
-    : 0.04;
+  // isNaN guard: Meyda can return NaN for rms during the brief gap when a new
+  // track starts decoding — treat NaN as absence of a valid reading.
+  const rawRms  = latestMeydaFeatures ? latestMeydaFeatures.rms : NaN;
+  const amplitude = (!isNaN(rawRms)) ? rawRms : 0.04;
 
   // --- Spectral brightness (via Meyda spectralCentroid) ---
   // spectralCentroid is the weighted mean frequency in Hz. Dividing by the
@@ -1133,9 +1134,12 @@ function updateAudioData() {
   // Higher values → brighter, more treble-heavy sound (strings, cymbals).
   // Lower values  → darker, bass-heavy sound (cello, bass guitar, kick drum).
   // Per the research, timbre modifies saturation + lightness, not hue.
-  // Falls back to 0.3 (neutral) before the first Meyda callback fires.
-  const spectralBrightness = latestMeydaFeatures && latestMeydaFeatures.spectralCentroid != null
-    ? latestMeydaFeatures.spectralCentroid / (audioCtx.sampleRate / 2)
+  // Falls back to 0.3 (neutral) when Meyda hasn't fired or returns NaN.
+  // Note: spectralCentroid != null passes for NaN (NaN !== null), so the
+  // isNaN check is required in addition to the null guard.
+  const rawCentroid = latestMeydaFeatures ? latestMeydaFeatures.spectralCentroid : NaN;
+  const spectralBrightness = (rawCentroid != null && !isNaN(rawCentroid))
+    ? rawCentroid / (audioCtx.sampleRate / 2)
     : 0.3;
 
   // --- Onset detection (spectral flux — unchanged from M2) ---
@@ -1222,6 +1226,11 @@ function loadAudioFile(file) {
   // revokeObjectURL is safe to call here — the audio element will be
   // given a new src immediately below.
   if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
+
+  // Reset Meyda's cached features so the previous track's values don't
+  // persist into the new track's first frames. updateAudioData() will fall
+  // back to neutral idle values until the new track's first Meyda callback fires.
+  latestMeydaFeatures = null;
 
   const url = URL.createObjectURL(file);
   audioPlayer.src = url;
