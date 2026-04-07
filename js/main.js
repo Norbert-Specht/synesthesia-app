@@ -6,10 +6,11 @@
 // Milestone 2: Web Audio API integration — real-time frequency extraction,
 //              amplitude tracking, spectral flux onset detection. All values
 //              collected into a single `audioData` object each frame.
-// Milestone 3: Full rebuild — Meyda.js replaces hand-rolled chroma extraction.
-//              Chroma (12 pitch class energies), RMS amplitude, and spectral
-//              centroid now sourced from Meyda's callback. Own spectral flux
-//              onset detection retained. Aurora rendering rebuild follows.
+// Milestone 3: Full rebuild — dynamic pitch-driven ribbon system.
+//              Meyda chroma drives a live ribbon pool: ribbons are born,
+//              promoted, demoted, and faded as the dominant pitch changes.
+//              Each ribbon's color comes from the Rimsky-Korsakov profile.
+//              Vertical aurora geometry replaces previous horizontal bands.
 //
 // Architecture overview:
 //   loadAudioFile()
@@ -17,9 +18,11 @@
 //     → audioPlayer.play()
 //
 //   drawFrame()  [requestAnimationFrame loop]
-//     → updateAudioData()           (reads analyser → writes audioData)
-//     → updateVisualState()         (lerps audioData → visualState, smoothed)
-//     → drawAuroraLayer() × 5      (reads visualState — live visual response)
+//     → updateAudioData()           (Meyda + spectral flux → audioData)
+//     → updateRibbonLifecycle()     (spawn / demote / fade ribbons)
+//     → updateRibbonOpacities()     (animate opacity transitions, refresh colors)
+//     → drawBackground()            (sky gradient + stars)
+//     → drawRibbon() × N            (each ribbon in the pool, back-to-front)
 // =============================================================================
 
 
@@ -41,119 +44,69 @@ window.addEventListener('resize', resizeCanvas);
 
 
 // ================================
-// AURORA — LAYER DEFINITIONS
+// ACTIVE PROFILE
 //
-// Each layer is a sinusoidal ribbon rendered with two passes:
-//   1. Outer glow  — wide, soft, semi-transparent fill
-//   2. Bright core — narrow, near-white centre that gives the "lit" look
+// The active synesthete profile maps pitch class indices (0–11) to HSL colors.
+// RIMSKY_KORSAKOV_PROFILE is defined in profiles/rimsky-korsakov.js, loaded via
+// a script tag in index.html before main.js. All color lookups go through
+// getProfileColor(), which applies the full modulation pipeline on top of the
+// base color.
 //
-// Layers use globalCompositeOperation: 'screen', which mimics how light
-// blends. Overlapping cyan + green → white. Purple + green → teal.
-// This is the key technique that prevents the aurora from becoming muddy.
-//
-// All position/size values are fractions of canvas dimensions so the
-// aurora scales correctly on any screen size.
-//
-// `zone` assigns each layer to a frequency region ('high', 'mid', 'low').
-// drawAuroraLayer() reads the matching visualState energy value to modulate
-// that layer's thickness, speed, opacity, and wave height in real-time.
+// In Milestone 4 this will be swapped live via a profile switcher UI.
 // ================================
 
-const AURORA_LAYERS = [
-  {
-    yFraction:   0.15,   // vertical centre as a fraction of canvas height (0=top, 1=bottom)
-    amplitude:   0.07,   // primary wave height as a fraction of canvas height
-    waveFreq:    2.2,    // number of full sine cycles across the screen width
-    waveSpeed:   0.20,   // how fast the wave moves horizontally (time multiplier)
-    wobbleFreq:  0.9,    // frequency of the slower secondary wobble (relative to primary)
-    wobbleAmp:   0.5,    // secondary wobble amplitude as a fraction of primary amplitude
-    thickness:   0.20,   // ribbon half-height as a fraction of canvas height
-    color:       [0, 255, 128],    // vivid green — high zone (melody / treble)
-    opacity:     0.60,
-    timeOffset:  0.0,    // phase offset so layers don't all move in sync
-    zone:        'high', // driven by visualState.high — reacts to treble energy
-  },
-  {
-    yFraction:   0.28,
-    amplitude:   0.06,
-    waveFreq:    1.6,
-    waveSpeed:   0.13,
-    wobbleFreq:  1.2,
-    wobbleAmp:   0.4,
-    thickness:   0.17,
-    color:       [0, 220, 255],    // cyan — upper-mid zone
-    opacity:     0.52,
-    timeOffset:  2.1,
-    zone:        'high', // second high-zone layer — adds depth to treble response
-  },
-  {
-    yFraction:   0.44,
-    amplitude:   0.09,
-    waveFreq:    2.7,
-    waveSpeed:   0.24,
-    wobbleFreq:  0.7,
-    wobbleAmp:   0.6,
-    thickness:   0.22,
-    color:       [160, 80, 255],   // purple — mid zone (harmony)
-    opacity:     0.46,
-    timeOffset:  4.4,
-    zone:        'mid',  // driven by visualState.mid — reacts to vocal/harmonic energy
-  },
-  {
-    yFraction:   0.57,
-    amplitude:   0.05,
-    waveFreq:    1.4,
-    waveSpeed:   0.11,
-    wobbleFreq:  1.5,
-    wobbleAmp:   0.3,
-    thickness:   0.14,
-    color:       [255, 30, 140],   // magenta — lower-mid accent
-    opacity:     0.34,
-    timeOffset:  1.6,
-    zone:        'mid',  // second mid-zone layer — accent layer for harmonic movement
-  },
-  {
-    yFraction:   0.67,
-    amplitude:   0.07,
-    waveFreq:    2.0,
-    waveSpeed:   0.17,
-    wobbleFreq:  0.8,
-    wobbleAmp:   0.45,
-    thickness:   0.22,
-    color:       [0, 170, 220],    // deep teal/blue — low zone (bass)
-    opacity:     0.38,
-    timeOffset:  3.5,
-    zone:        'low',  // driven by visualState.bass — reacts to kick/bass energy
-  },
-];
+let activeProfile = RIMSKY_KORSAKOV_PROFILE;
 
 
 // ================================
-// AURORA — VISUAL STATE
-//
-// visualState holds the smoothed rendering values that drawAuroraLayer()
-// reads each frame. It is NOT the same as audioData.
-//
-// Why a separate visualState instead of reading audioData directly:
-//   audioData updates every frame with raw values that can jump sharply —
-//   a sudden loud onset snaps amplitude from 0.1 to 0.9 in one frame.
-//   Reading that directly produces mechanical, twitchy visuals.
-//   visualState lerps toward audioData each frame at a controlled rate,
-//   so the aurora moves fluidly and organically rather than snapping.
-//   The lerp speed differs per field — bass is slow and weighty, high
-//   is fast and reactive — matching the perceptual character of each band.
-//
-// Initialised to the same values as IDLE_AUDIO_DATA so the aurora starts
-// in its ambient state rather than at zero (which would make it invisible).
+// RIBBON SYSTEM — CONSTANTS
 // ================================
 
-const visualState = {
-  bass:          0.08,   // smoothed bass energy — slow, weighty response
-  mid:           0.04,   // smoothed mid energy — medium response
-  high:          0.02,   // smoothed high energy — fast, bright response
-  amplitude:     0.04,   // smoothed overall amplitude — global swell
-  beatIntensity: 0.0,    // smoothed beat/onset intensity — fast attack, handled by decay in audio
-};
+// How long a new dominant pitch must remain stable before triggering a ribbon
+// transition. 500ms smooths over passing tones, ornaments, and vibrato without
+// making genuine harmonic changes feel sluggish.
+const RIBBON_DEBOUNCE_MS = 500;
+
+// Hard cap on simultaneous live ribbons (1 primary + up to 2 secondary).
+// Matches the research: one dominant color with 1–2 harmonic tints.
+const MAX_RIBBONS = 3;
+
+
+// ================================
+// RIBBON SYSTEM — STATE
+//
+// The ribbon pool replaces the previous AURORA_LAYERS + visualState approach.
+//
+// Why the change:
+//   The old system used a fixed array of 5 horizontal bands (AURORA_LAYERS),
+//   each mapped to a static frequency zone (bass / mid / high). Colors were
+//   hardcoded per layer. visualState lerped band energies to smooth motion,
+//   but there was no connection between the actual musical pitch being played
+//   and the colors shown — the same 5 fixed colors appeared regardless of note.
+//
+//   The ribbon pool replaces this with a dynamic system: ribbons are born,
+//   promoted, demoted, and faded based on which pitch classes Meyda detects
+//   as dominant. Each ribbon's color comes from the synesthete profile lookup
+//   for its specific pitch class. The result is a visualization that genuinely
+//   responds to harmony, not just energy levels.
+// ================================
+
+// Live ribbon pool — written by updateRibbonLifecycle(), read by drawRibbon().
+// Maximum MAX_RIBBONS entries at any time.
+let ribbons = [];
+
+// Debounce tracking — the candidate dominant pitch and when it first appeared.
+// A ribbon transition only fires after RIBBON_DEBOUNCE_MS of stability.
+let dominantPitchCandidate     = -1;
+let dominantPitchDebounceStart = 0;
+
+// Sky background hue — lerps very slowly toward the weighted average of active
+// ribbon hues. Starts at 220 (deep blue-teal) matching the night sky base color.
+let skyHue = 220;
+
+// Cached star positions — generated once on first background draw, stored as
+// canvas fractions so they scale correctly on window resize.
+let stars = null;
 
 
 // ================================
@@ -178,169 +131,287 @@ function lerp(current, target, factor) {
 
 
 // ================================
-// AURORA — DRAW SINGLE LAYER
+// RIBBON SYSTEM — COLOR PIPELINE
 //
-// Renders one aurora ribbon in two passes (glow + core).
-// The gradient is rebuilt each frame so it tracks the wave's
-// current vertical position correctly.
+// Translates a pitch class index (0–11) into a modulated HSL color by
+// looking up the base hue from the active synesthete profile and then
+// applying three live modulations:
+//
+//   1. Amplitude scales saturation (0.35–1.0 range).
+//      Quiet → muted, desaturated colors. Loud → vivid, saturated colors.
+//      Matches research: louder synesthetic experiences appear more vivid.
+//
+//   2. Spectral brightness shifts lightness ±4 points.
+//      spectralBrightness raw range from Meyda is 0.001–0.010; multiply by
+//      100 to map to 0.1–1.0 before the lightness offset calculation.
+//
+//   3. Beat intensity adds up to +18 lightness on onset — a brief color bloom
+//      when a musical transient fires.
+//
+// Parameters:
+//   pitchClass — integer 0–11 (0 = C, 11 = B)
+//
+// Returns: { h, s, l }
 // ================================
 
-function drawAuroraLayer(layer, time) {
-  const w = canvas.width;
-  const h = canvas.height;
+function getProfileColor(pitchClass) {
+  const base = activeProfile.pitchColors[pitchClass];
 
-  const centerY   = layer.yFraction * h;
-  const [r, g, b] = layer.color;
+  // Amplitude scales saturation: 0.35 at silence, 1.0 at full amplitude.
+  // Prevents ribbons appearing fully vivid when music is quiet.
+  const s = base.s * (0.35 + audioData.amplitude * 0.65);
 
-  // Offset time by each layer's unique phase so they drift independently
-  const t = time + layer.timeOffset;
+  // spectralBrightness × 100 maps the Meyda centroid range (0.001–0.010)
+  // to a usable 0.1–1.0 brightness value. (brightness - 0.5) centres around
+  // zero, giving ±4 lightness points across the full brightness range.
+  const brightness = Math.min(1.0, audioData.spectralBrightness * 100);
+  const l          = base.l + (brightness - 0.5) * 8;
 
-  // --- Resolve zone energy ---
-  // Each layer belongs to a frequency zone ('high', 'mid', or 'low').
-  // zoneEnergy is the smoothed value from visualState that corresponds
-  // to this layer's zone — it drives all the per-layer modulations below.
-  // The ?? fallback to visualState.amplitude covers any hypothetical layer
-  // without a zone property, so no layer is ever left undriven.
-  const zoneEnergy = {
-    high: visualState.high,
-    mid:  visualState.mid,
-    low:  visualState.bass,
-  }[layer.zone] ?? visualState.amplitude;
+  // Beat intensity adds up to +18 lightness — brief bloom on musical onsets.
+  // Clamped at 88 so the color never bleaches to near-white.
+  const lFinal = Math.min(88, l + audioData.beatIntensity * 18);
 
-  // --- Compute modulated visual properties from visualState ---
-
-  // Thickness: zone energy expands the ribbon — more energy = thicker aurora band.
-  // 0.6 sets a minimum size of 60% of the design value so the ribbon is always
-  // visible. Adding zoneEnergy × 0.8 means full energy (1.0) brings it to 140%
-  // of design thickness — a noticeable but not extreme swell.
-  const thick = layer.thickness * h * (0.6 + zoneEnergy * 0.8);
-
-  // Wave speed: higher zone energy drives faster, more agitated movement.
-  // Multiplier ranges from 1.0× (silence) to 2.5× (full energy).
-  // High-zone layers already have higher base waveSpeed values, so their
-  // treble response is naturally more frenetic than the slow bass layers.
-  const speed = layer.waveSpeed * (1.0 + zoneEnergy * 1.5);
-
-  // Opacity: three additive contributions —
-  //   1. Base layer opacity — the layer's design presence, always visible
-  //   2. Zone energy adds up to +0.25 — louder/busier frequency band = more visible
-  //   3. Beat intensity adds up to +0.35 — the whole aurora flashes on any musical
-  //      onset regardless of which zone triggered it, giving a global pulse feel
-  const opacity = Math.min(1.0,
-    layer.opacity
-    + zoneEnergy * 0.25
-    + visualState.beatIntensity * 0.35
-  );
-
-  // Wave amplitude: zone energy increases ribbon height — loud passages make the
-  // aurora swell taller. Ranges from 1.0× (silence) to 1.6× (full energy).
-  const amp = layer.amplitude * h * (1.0 + zoneEnergy * 0.6);
-
-  // Build the wave point array — one point every 3px horizontally for
-  // smoothness without excess computation.
-  const STEPS = Math.ceil(w / 3);
-  const stepX = w / STEPS;
-  const pts   = [];
-
-  for (let i = 0; i <= STEPS; i++) {
-    const x     = i * stepX;
-    // phase maps x position to a full sine cycle count (waveFreq cycles per screen width)
-    const phase = (x / w) * Math.PI * 2 * layer.waveFreq;
-
-    // Primary sine wave + secondary wobble at a different frequency.
-    // The 0.65 multiplier on the wobble speed gives it a slightly different
-    // tempo to the primary, avoiding a mechanical-looking repeat.
-    // `speed` replaces the static layer.waveSpeed — faster when zone is active.
-    const y = centerY
-      + Math.sin(phase + t * speed) * amp
-      + Math.sin(phase * layer.wobbleFreq + t * speed * 0.65) * amp * layer.wobbleAmp;
-
-    pts.push({ x, y });
-  }
-
-  ctx.save();
-  // 'screen' blending: each layer adds light, never subtracts.
-  // This is what makes color overlaps feel luminous rather than muddy.
-  ctx.globalCompositeOperation = 'screen';
-
-  // — Pass 1: Outer glow ribbon (wide, soft) —
-  ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y - thick);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y - thick);
-  // Trace back along the bottom edge to close the filled shape
-  for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i].x, pts[i].y + thick);
-  ctx.closePath();
-
-  // Vertical gradient: transparent → full color at centre → transparent.
-  // Using centerY (not pts[i].y) as the gradient anchor is an intentional
-  // simplification — the gradient won't perfectly track the wave crest but
-  // the result is visually indistinguishable and much cheaper to compute.
-  const glowGrad = ctx.createLinearGradient(0, centerY - thick, 0, centerY + thick);
-  glowGrad.addColorStop(0.00, `rgba(${r},${g},${b},0)`);
-  glowGrad.addColorStop(0.25, `rgba(${r},${g},${b},${opacity * 0.45})`);
-  glowGrad.addColorStop(0.50, `rgba(${r},${g},${b},${opacity})`);
-  glowGrad.addColorStop(0.75, `rgba(${r},${g},${b},${opacity * 0.45})`);
-  glowGrad.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
-  ctx.fillStyle = glowGrad;
-  ctx.fill();
-
-  // — Pass 2: Bright core (narrow, near-white hot centre) —
-  // 18% of the ribbon thickness gives a tight glowing spine.
-  const coreThick = thick * 0.18;
-  ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y - coreThick);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y - coreThick);
-  for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i].x, pts[i].y + coreThick);
-  ctx.closePath();
-
-  const coreGrad = ctx.createLinearGradient(0, centerY - coreThick, 0, centerY + coreThick);
-  coreGrad.addColorStop(0.00, `rgba(255,255,255,0)`);
-  coreGrad.addColorStop(0.50, `rgba(255,255,255,${opacity * 0.55})`);
-  coreGrad.addColorStop(1.00, `rgba(255,255,255,0)`);
-  ctx.fillStyle = coreGrad;
-  ctx.fill();
-
-  ctx.restore();
+  return {
+    h: base.h,
+    s: Math.max(5,  Math.min(100, s)),      // floor at 5 — never fully grey
+    l: Math.max(15, Math.min(88,  lFinal)), // floor at 15 — always visible on dark bg
+  };
 }
 
 
 // ================================
-// AURORA — UPDATE VISUAL STATE
+// RIBBON SYSTEM — HORIZONTAL POSITIONING
 //
-// Runs every frame after updateAudioData() and before drawing.
-// Lerps each visualState field toward the corresponding audioData value
-// at a rate tuned to the perceptual character of that frequency band.
+// Returns an x position (as a canvas fraction 0.0–1.0) for a new ribbon,
+// spreading ribbons across three horizontal zones to prevent visual overlap.
 //
-// Why different lerp rates per band:
-//   Bass is slow and physical — a kick drum felt in the chest, a bass
-//   note that sustains. A slow lerp (0.04) gives it weight and momentum.
+// The algorithm prefers zones that aren't occupied by any live ribbon.
+// Within the chosen zone a random position is selected with ±0.08 jitter.
+// A minimum 0.18-fraction separation from every existing ribbon is enforced.
 //
-//   High frequencies are fast and airy — hi-hats, cymbal shimmers, sibilance.
-//   A faster lerp (0.10) lets the high zone flicker and react quickly.
-//
-//   Mid sits between them — vocals, piano, guitar. Medium lerp (0.06).
-//
-//   Amplitude is the overall loudness envelope — a medium-slow lerp (0.05)
-//   gives the global swell a breath-like quality rather than a hard pump.
-//
-//   beatIntensity gets the fastest lerp (0.20) because onsets need to feel
-//   sharp and immediate. The gradual fade is already handled by ONSET_DECAY
-//   in the audio layer — the visual layer just needs to track it quickly.
+// Returns: number — x fraction 0.10–0.90
 // ================================
 
-function updateVisualState() {
-  // Lerp speed constants — tuned to the perceptual weight of each band.
-  const LERP_BASS = 0.04;   // slow, weighty — bass energy moves like a heavy ribbon
-  const LERP_MID  = 0.06;   // medium — harmonic content drifts fluidly
-  const LERP_HIGH = 0.10;   // fast — treble flickers and responds quickly
-  const LERP_AMP  = 0.05;   // medium-slow — global brightness swells and breathes
-  const LERP_BEAT = 0.20;   // fast attack — onset flash must feel immediate
+function getAsymmetricX() {
+  // Three horizontal zones. Left/right are narrower than centre, pushing
+  // ribbons toward the visual "shoulders" of the screen for a more
+  // interesting composition than evenly-spaced thirds.
+  const zones = [
+    { min: 0.15, max: 0.38 },  // left zone
+    { min: 0.38, max: 0.62 },  // centre zone
+    { min: 0.62, max: 0.85 },  // right zone
+  ];
 
-  visualState.bass          = lerp(visualState.bass,          audioData.bass,          LERP_BASS);
-  visualState.mid           = lerp(visualState.mid,           audioData.mid,           LERP_MID);
-  visualState.high          = lerp(visualState.high,          audioData.high,          LERP_HIGH);
-  visualState.amplitude     = lerp(visualState.amplitude,     audioData.amplitude,     LERP_AMP);
-  visualState.beatIntensity = lerp(visualState.beatIntensity, audioData.beatIntensity, LERP_BEAT);
+  // Determine which zone indices are already occupied by live ribbons.
+  const occupiedZoneIndices = new Set();
+  ribbons.forEach(r => {
+    zones.forEach((z, i) => {
+      if (r.xFraction >= z.min && r.xFraction < z.max) occupiedZoneIndices.add(i);
+    });
+  });
+
+  // Prefer a free zone; fall back to any zone if all three are occupied.
+  const freeZones = zones.filter((_, i) => !occupiedZoneIndices.has(i));
+  const pool      = freeZones.length > 0 ? freeZones : zones;
+  const zone      = pool[Math.floor(Math.random() * pool.length)];
+
+  // Random position within zone + ±0.08 jitter for organic feel.
+  let x = zone.min + Math.random() * (zone.max - zone.min);
+  x += (Math.random() - 0.5) * 0.08;
+  x  = Math.max(0.10, Math.min(0.90, x));
+
+  // Enforce minimum 0.18 separation from every existing ribbon's base x.
+  // If too close, try up to 12 random alternates before giving up.
+  const tooClose = () => ribbons.some(r => Math.abs(r.xFraction - x) < 0.18);
+  if (tooClose()) {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      x = 0.10 + Math.random() * 0.80;
+      if (!tooClose()) break;
+    }
+    x = Math.max(0.10, Math.min(0.90, x));
+  }
+
+  return x;
+}
+
+
+// ================================
+// RIBBON SYSTEM — SPAWN
+//
+// Creates and returns a new ribbon object for the given pitch class.
+// The ribbon starts in state 'rising' with opacity 0 — updateRibbonOpacities()
+// lerps it toward targetOpacity over subsequent frames.
+//
+// Parameters:
+//   pitchClass — integer 0–11; the pitch class this ribbon represents
+//   role       — 'primary' | 'secondary'; sets target opacity and draw order
+//
+// Returns: ribbon object (caller is responsible for pushing to ribbons array)
+// ================================
+
+function spawnRibbon(pitchClass, role) {
+  return {
+    pitchClass,
+    role,
+    state:         'rising',
+    opacity:       0.0,
+
+    // Primary ribbons are brighter and more dominant. Secondary ribbons are
+    // translucent tints — present but not overwhelming.
+    targetOpacity: role === 'primary' ? 0.88 : 0.52,
+
+    xFraction:  getAsymmetricX(),
+
+    // Per-ribbon thickness multiplier (0.9–1.2) — prevents all ribbons looking
+    // identical in girth.
+    thickness:  0.9 + Math.random() * 0.3,
+
+    // Color computed at spawn; refreshed every frame by updateRibbonOpacities().
+    hsl:        getProfileColor(pitchClass),
+
+    // Phase offset shifts the sine waves so ribbons drift independently.
+    // Without this, all ribbons would sway in unison and look mechanical.
+    timeOffset: Math.random() * Math.PI * 2,
+
+    spawnTime:  performance.now(),
+  };
+}
+
+
+// ================================
+// RIBBON SYSTEM — LIFECYCLE MANAGER
+//
+// Called every frame. Drives the ribbon pool state machine:
+//   1. Removes 'dead' ribbons from the pool.
+//   2. Reads audioData.dominantPitch to detect pitch changes.
+//   3. Applies a 500ms debounce so vibrato / passing tones don't trigger
+//      spurious ribbon transitions.
+//   4. On confirmed pitch change: demotes current primary to secondary,
+//      fades excess secondaries, spawns a new primary.
+//   5. First-ribbon fast-path: bypasses debounce on an empty pool so the
+//      screen isn't blank for 500ms at track start.
+// ================================
+
+function updateRibbonLifecycle() {
+  const now         = performance.now();
+  const newDominant = audioData.dominantPitch;
+
+  // Remove fully faded ribbons — they contribute nothing to the render.
+  ribbons = ribbons.filter(r => r.state !== 'dead');
+
+  // --- First-ribbon fast-path ---
+  // If there is no active primary, spawn immediately without debounce.
+  const hasPrimary = ribbons.some(
+    r => r.role === 'primary' && r.state !== 'fading' && r.state !== 'dead'
+  );
+  if (!hasPrimary && newDominant >= 0) {
+    ribbons.push(spawnRibbon(newDominant, 'primary'));
+    audioData.secondaryPitches.slice(0, 2).forEach(p => {
+      if (ribbons.length < MAX_RIBBONS) ribbons.push(spawnRibbon(p, 'secondary'));
+    });
+    // Initialise debounce state so the normal path works correctly next frame.
+    dominantPitchCandidate     = newDominant;
+    dominantPitchDebounceStart = now;
+    return;
+  }
+
+  // --- Debounce: pitch change only fires after 500ms of stability ---
+  if (newDominant !== dominantPitchCandidate) {
+    // Candidate shifted — restart the timer.
+    dominantPitchCandidate     = newDominant;
+    dominantPitchDebounceStart = now;
+    return;
+  }
+
+  // Still inside the debounce window — hold off.
+  if ((now - dominantPitchDebounceStart) < RIBBON_DEBOUNCE_MS) return;
+
+  // --- Check whether the stabilised pitch differs from the current primary ---
+  const currentPrimary = ribbons.find(
+    r => r.role === 'primary' && r.state !== 'fading' && r.state !== 'dead'
+  );
+  if (currentPrimary && currentPrimary.pitchClass === newDominant) {
+    // Same pitch as the active primary — nothing to do. Reset the debounce
+    // so this check doesn't re-fire every frame after the window elapses.
+    dominantPitchDebounceStart = now;
+    return;
+  }
+
+  // --- Trigger ribbon transition ---
+
+  // 1. Demote current primary to secondary — it dims but stays visible.
+  if (currentPrimary) {
+    currentPrimary.role          = 'secondary';
+    currentPrimary.state         = 'demoting';
+    currentPrimary.targetOpacity = 0.38;
+  }
+
+  // 2. Fade oldest excess secondaries to stay within MAX_RIBBONS when the
+  //    new primary arrives. Reserve one slot for the incoming primary.
+  const liveSecondaries = ribbons.filter(
+    r => r.role === 'secondary' && r.state !== 'fading' && r.state !== 'dead'
+  );
+  const secondarySlots = MAX_RIBBONS - 1;   // slots left after the new primary
+  liveSecondaries
+    .sort((a, b) => a.spawnTime - b.spawnTime)          // oldest first
+    .slice(0, Math.max(0, liveSecondaries.length - secondarySlots))
+    .forEach(r => { r.state = 'fading'; r.targetOpacity = 0; });
+
+  // 3. Spawn the new primary for the confirmed dominant pitch.
+  if (newDominant >= 0) ribbons.push(spawnRibbon(newDominant, 'primary'));
+
+  // 4. Add secondary pitches not already represented in the live pool.
+  const livePitches = new Set(
+    ribbons.filter(r => r.state !== 'fading' && r.state !== 'dead').map(r => r.pitchClass)
+  );
+  audioData.secondaryPitches.forEach(p => {
+    const liveCount = ribbons.filter(r => r.state !== 'fading' && r.state !== 'dead').length;
+    if (!livePitches.has(p) && liveCount < MAX_RIBBONS) {
+      ribbons.push(spawnRibbon(p, 'secondary'));
+      livePitches.add(p);
+    }
+  });
+
+  // 5. Reset the debounce so we don't re-fire on the next frame.
+  dominantPitchDebounceStart = now;
+}
+
+
+// ================================
+// RIBBON SYSTEM — OPACITY ANIMATION
+//
+// Called every frame after updateRibbonLifecycle(). Lerps each ribbon's
+// opacity toward its targetOpacity and advances the state machine when
+// the transition is complete. Also refreshes each ribbon's HSL color from
+// the pipeline so live amplitude / brightness / beat changes are visible.
+//
+// Lerp rates:
+//   rising          0.025 — slow fade-in; the aurora materialises gently
+//   fading          0.018 — very slow fade-out; ghosting lingers as a visual echo
+//   active/demoting 0.035 — moderate; tracks opacity changes without snapping
+// ================================
+
+function updateRibbonOpacities() {
+  ribbons.forEach(r => {
+    const rate = r.state === 'rising'  ? 0.025
+               : r.state === 'fading'  ? 0.018
+               :                         0.035;   // 'active' | 'demoting'
+
+    r.opacity = lerp(r.opacity, r.targetOpacity, rate);
+
+    // Refresh color each frame so the ribbon responds to live audio changes.
+    r.hsl = getProfileColor(r.pitchClass);
+
+    // Advance the state machine once the opacity transition is complete.
+    if (r.state === 'rising' && Math.abs(r.opacity - r.targetOpacity) < 0.01) {
+      r.state   = 'active';
+      r.opacity = r.targetOpacity;   // snap to exact value — prevent endless lerp
+    }
+    if (r.state === 'fading' && r.opacity < 0.005) {
+      r.state   = 'dead';
+      r.opacity = 0;
+    }
+  });
 }
 
 
@@ -349,25 +420,251 @@ function updateVisualState() {
 // ================================
 
 // `time` is a monotonically increasing counter used as the sine wave
-// argument. It increments by ~0.016 per frame (≈ 1/60s), so one unit
-// of time corresponds to roughly one second at 60fps.
+// argument for all animated geometry. Increments ~0.016 per frame (≈ 1/60s),
+// so one unit of time ≈ one second of elapsed animation at 60fps.
 let time = 0;
 
-function drawFrame() {
-  // Step 1: Read from Web Audio API → writes raw values into audioData.
-  updateAudioData();
 
-  // Step 2: Smooth audioData → visualState via per-band lerp.
-  // This is what the renderer reads — never audioData directly.
-  updateVisualState();
+// ================================
+// BACKGROUND — STAR GENERATION
+//
+// Generates an array of star descriptors using canvas-fraction coordinates
+// so they scale correctly on window resize. Called once; result cached in `stars`.
+//
+// Parameters:
+//   count — number of stars to generate
+//
+// Returns: Array of { xf, yf, radius, opacity, twinkle }
+// ================================
 
-  // Step 3: Clear the canvas with the background color each frame.
-  ctx.fillStyle = '#060810';
+function generateStars(count) {
+  const list = [];
+  for (let i = 0; i < count; i++) {
+    list.push({
+      xf:      Math.random(),          // horizontal fraction 0–1
+      yf:      Math.random() * 0.65,   // upper 65% only — no stars near the horizon
+      radius:  0.3 + Math.random() * 0.8,
+      opacity: 0.2 + Math.random() * 0.6,
+      // Per-star phase offset so each star twinkles at a different point in its cycle.
+      twinkle: Math.random() * Math.PI * 2,
+    });
+  }
+  return list;
+}
+
+
+// ================================
+// BACKGROUND — DRAW STARS
+//
+// Renders cached stars with a slow sine twinkle oscillation on their opacity.
+//
+// Parameters:
+//   time — the shared animation time counter
+// ================================
+
+function drawStars(time) {
+  if (!stars) return;
+  stars.forEach(s => {
+    // Twinkle: ±30% opacity variation at 0.4 rad/time-unit.
+    // At 60fps with time += 0.016 per frame, this is ~0.006 Hz —
+    // roughly one full twinkle cycle every 160 seconds. Very slow, ambient drift.
+    const twinkleOpacity = s.opacity * (0.7 + 0.3 * Math.sin(time * 0.4 + s.twinkle));
+    ctx.beginPath();
+    ctx.arc(s.xf * canvas.width, s.yf * canvas.height, s.radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 255, 255, ${twinkleOpacity})`;
+    ctx.fill();
+  });
+}
+
+
+// ================================
+// BACKGROUND — SKY AND STARS
+//
+// Draws the full background each frame: sky gradient + stars.
+// Generates and caches star positions on first call.
+//
+// skyHue lerps very slowly toward the weighted mean of active ribbon hues,
+// giving the night sky a subtle harmonic tint that shifts over time.
+//
+// Parameters:
+//   time — the shared animation time counter
+// ================================
+
+function drawBackground(time) {
+  // Generate and cache star positions on first call.
+  if (!stars) stars = generateStars(180);
+
+  // Lerp sky hue toward the opacity-weighted average of active ribbon hues.
+  // 0.002 per frame is nearly imperceptible but produces a clear hue shift
+  // over 10–30 seconds, tinting the sky with the dominant harmony.
+  const liveRibbons = ribbons.filter(r => r.state !== 'dead' && r.opacity > 0.05);
+  if (liveRibbons.length > 0) {
+    const totalOpacity = liveRibbons.reduce((sum, r) => sum + r.opacity, 0);
+    const weightedHue  = liveRibbons.reduce((sum, r) => sum + r.hsl.h * r.opacity, 0)
+                         / totalOpacity;
+    skyHue = lerp(skyHue, weightedHue, 0.002);
+  }
+
+  // Sky gradient: near-black at the zenith, slightly warmer toward the horizon.
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  skyGrad.addColorStop(0.0, `hsl(${skyHue}, 18%, 4%)`);   // zenith — near black
+  skyGrad.addColorStop(0.6, `hsl(${skyHue}, 22%, 7%)`);   // mid sky
+  skyGrad.addColorStop(1.0, `hsl(${skyHue}, 28%, 10%)`);  // horizon — slightly lighter
+  ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Step 4: Draw all aurora layers back-to-front (array order = painter's order).
-  // Each layer reads visualState internally to modulate its appearance.
-  AURORA_LAYERS.forEach(layer => drawAuroraLayer(layer, time));
+  // Stars drawn above the sky gradient, below the ribbon layer.
+  drawStars(time);
+}
+
+
+// ================================
+// RIBBON SYSTEM — DRAW RIBBON
+//
+// Renders one ribbon from bottom to top in two passes (outer glow + bright core),
+// both using 'screen' blend mode so ribbons add light rather than occlude.
+//
+// Vertical geometry: the ribbon is a series of horizontal slices stacked from
+// canvas bottom to top. Each slice has its own x (dual-sine lateral drift),
+// thickness (sine noise × amplitude), and opacity (origin fade).
+//
+// Origin fade: how far the ribbon "rises" from the bottom is driven by
+// audioData.amplitude. Loud → nearly full height. Quiet → top portion only.
+//
+// Option D glow: the outer glow gradient blends at its edges toward the
+// complementary ribbon's hue (secondary → primary's color, and vice versa),
+// creating harmonic color mixing at the visual boundary of each ribbon.
+//
+// Parameters:
+//   ribbon — a ribbon object from the ribbons pool
+//   time   — the shared animation time counter
+// ================================
+
+function drawRibbon(ribbon, time) {
+  if (ribbon.opacity < 0.005) return;
+
+  const { h, s, l } = ribbon.hsl;
+
+  // Origin fade height: the vertical extent of the transparent-to-opaque
+  // gradient at the bottom of the ribbon.
+  //   amplitude 0 → fade spans 82% of canvas height (only top 18% visible)
+  //   amplitude 1 → fade spans 30% of canvas height (ribbon nearly full height)
+  const originFadeHeight = canvas.height * (0.82 - audioData.amplitude * 0.52);
+
+  // --- Build vertical centerline point array (bottom → top) ---
+  // One point every 4 canvas pixels — enough resolution for smooth curvature.
+  const STEPS = Math.ceil(canvas.height / 4);
+  const pts   = [];
+
+  for (let i = 0; i <= STEPS; i++) {
+    const progress = i / STEPS;
+    const y        = canvas.height - progress * canvas.height;
+
+    // Dual-frequency lateral drift: two sine waves at different frequencies and
+    // time rates produce an irregular, organic weaving motion. A single sine
+    // wave would look mechanical and repetitive.
+    const phase1 = progress * Math.PI * 2 * 1.8 + time * 0.18 + ribbon.timeOffset;
+    const phase2 = progress * Math.PI * 2 * 0.9 + time * 0.11 + ribbon.timeOffset * 0.7;
+    const xAmp   = canvas.width * 0.055;
+    const x      = ribbon.xFraction * canvas.width
+                   + Math.sin(phase1) * xAmp
+                   + Math.sin(phase2) * xAmp * 0.35;
+
+    // Thickness noise: 5 sine cycles along the height create natural pinch
+    // points and swells. ±32% variation keeps it subtle but visible.
+    const thickNoise = 1 + Math.sin(progress * Math.PI * 5 + time * 0.25) * 0.32;
+    const baseThick  = canvas.width * 0.018 * ribbon.thickness;
+    // Amplitude modulates thickness: quiet = thinner, loud = wider.
+    // 0.6 floor keeps the ribbon visible at silence; ×0.8 gives +40% at peak.
+    const thick = baseThick * thickNoise * (0.6 + audioData.amplitude * 0.8);
+
+    // Origin fade: transparent at the bottom, opaque at originFadeHeight above it.
+    const distFromBottom = canvas.height - y;
+    const originOpacity  = Math.min(1.0, distFromBottom / originFadeHeight);
+    const pointOpacity   = ribbon.opacity * originOpacity;
+
+    pts.push({ x, y, thick, pointOpacity });
+  }
+
+  // --- Option D: glow edge color from the complementary ribbon ---
+  // Primary ribbons: edges blend toward any active secondary ribbon's hue.
+  // Secondary ribbons: edges blend toward the primary ribbon's hue.
+  // Falls back to the ribbon's own color if no complement is live.
+  let glowH = h, glowS = s, glowL = l;
+  if (ribbon.role === 'primary') {
+    const sec = ribbons.find(
+      r => r.role === 'secondary' && r.state !== 'dead' && r.opacity > 0.05
+    );
+    if (sec) { glowH = sec.hsl.h; glowS = sec.hsl.s; glowL = sec.hsl.l; }
+  } else {
+    const pri = ribbons.find(
+      r => r.role === 'primary' && r.state !== 'dead' && r.opacity > 0.05
+    );
+    if (pri) { glowH = pri.hsl.h; glowS = pri.hsl.s; glowL = pri.hsl.l; }
+  }
+
+  ctx.save();
+  // 'screen' blend: ribbons add their light to everything behind them.
+  // Overlapping colors mix as light (additive), producing luminous blends.
+  ctx.globalCompositeOperation = 'screen';
+
+  // Draw each point as a horizontal fillRect.
+  // globalAlpha encodes the per-point origin fade so transparency tracks the
+  // ribbon's rise from the bottom of the canvas.
+  // Horizontal gradients are re-anchored to each point's actual x so they
+  // track the ribbon's lateral drift correctly.
+  for (let i = 0; i < pts.length; i++) {
+    const pt = pts[i];
+    if (pt.pointOpacity < 0.005) continue;
+
+    ctx.globalAlpha = pt.pointOpacity;
+
+    // Pass 1: outer glow — horizontal gradient, secondary color at edges,
+    // primary color at centre (Option D).
+    const glowGrad = ctx.createLinearGradient(pt.x - pt.thick, 0, pt.x + pt.thick, 0);
+    glowGrad.addColorStop(0.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+    glowGrad.addColorStop(0.25, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
+    glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.85)`);
+    glowGrad.addColorStop(0.75, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
+    glowGrad.addColorStop(1.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+    ctx.fillStyle = glowGrad;
+    ctx.fillRect(pt.x - pt.thick, pt.y - 2, pt.thick * 2, 4);
+
+    // Pass 2: bright core — narrow white gradient; the luminous spine.
+    // 18% of the glow thickness gives a tight, glowing centre line.
+    const coreThick = pt.thick * 0.18;
+    const coreGrad  = ctx.createLinearGradient(pt.x - coreThick, 0, pt.x + coreThick, 0);
+    coreGrad.addColorStop(0.0, 'rgba(255,255,255,0)');
+    coreGrad.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+    coreGrad.addColorStop(1.0, 'rgba(255,255,255,0)');
+    ctx.fillStyle = coreGrad;
+    ctx.fillRect(pt.x - coreThick, pt.y - 1, coreThick * 2, 2);
+  }
+
+  ctx.globalAlpha = 1.0;
+  ctx.restore();
+}
+
+
+function drawFrame() {
+  // Step 1: Read from Web Audio API / Meyda → writes into audioData.
+  updateAudioData();
+
+  // Step 2: Spawn, demote, and fade ribbons based on pitch analysis.
+  updateRibbonLifecycle();
+
+  // Step 3: Animate ribbon opacities and refresh colors from the pipeline.
+  updateRibbonOpacities();
+
+  // Step 4: Draw the night sky background (gradient + stars).
+  drawBackground(time);
+
+  // Step 5: Draw ribbons back-to-front.
+  // Secondary ribbons go behind the primary so the primary always reads
+  // as visually dominant — the bright top layer, not buried underneath.
+  [...ribbons]
+    .sort((a, b) => (a.role === 'primary' ? 1 : -1))
+    .forEach(r => drawRibbon(r, time));
 
   time += 0.016;
   requestAnimationFrame(drawFrame);
@@ -494,13 +791,6 @@ const IDLE_AUDIO_DATA = {
   spectralBrightness: 0.3,
   isBeat:             false,
   beatIntensity:      0.0,
-  // --- Legacy band energies (backward compatibility) ---
-  // updateVisualState() still reads bass/mid/high from audioData.
-  // These will be removed when the rendering section is rebuilt in the
-  // next step of the M3 rebuild.
-  bass:  0.08,
-  mid:   0.04,
-  high:  0.02,
 };
 
 
@@ -661,55 +951,6 @@ function initAudioContext() {
 }
 
 
-// ================================
-// AUDIO ANALYSIS — BAND ENERGY
-//
-// Averages the FFT magnitude values across a range of frequency bins
-// and normalises the result to 0.0–1.0.
-//
-// Bin-to-frequency mapping (44100 Hz sample rate, fftSize 2048):
-//   frequency ≈ binIndex × (sampleRate / fftSize) ≈ binIndex × 21.5 Hz
-//
-//   Bass  bins  0– 10  ≈    0 –  215 Hz  (kick, bass guitar, low synth)
-//   Mid   bins 11–100  ≈  215 – 2150 Hz  (vocals, guitar, piano, snare)
-//   High  bins 101–512 ≈ 2150 – 11025 Hz (hi-hats, cymbals, air, sibilance)
-//
-// Note: the top of the High band (bin 512) reaches ~11 kHz, not 20 kHz.
-// The upper half of the spectrum (11–22 kHz) is excluded — it carries
-// very little musical energy and would dilute the high band average.
-// ================================
-
-function getBandEnergy(data, startBin, endBin) {
-  let sum = 0;
-  const count = endBin - startBin + 1;
-  for (let i = startBin; i <= endBin; i++) {
-    sum += data[i];
-  }
-  // data values are 0–255; divide by 255 to normalise to 0.0–1.0
-  return sum / (count * 255);
-}
-
-
-// ================================
-// AUDIO ANALYSIS — RMS AMPLITUDE
-//
-// Root Mean Square of the time-domain waveform — a perceptually accurate
-// measure of loudness (correlates with how loud humans perceive the sound).
-//
-// Time-domain samples are 0–255 where 128 = silence (zero crossing).
-// We re-centre each sample around 0 before squaring.
-// ================================
-
-function getRMSAmplitude(data) {
-  let sumOfSquares = 0;
-  for (let i = 0; i < data.length; i++) {
-    // Re-centre: 128 → 0, 0 → -1, 255 → ~1
-    const sample = (data[i] - 128) / 128;
-    sumOfSquares += sample * sample;
-  }
-  return Math.sqrt(sumOfSquares / data.length);
-}
-
 
 // ================================
 // AUDIO ANALYSIS — DOMINANT PITCH DETECTION
@@ -852,17 +1093,13 @@ function updateAudioData() {
       spectralBrightness: 0.3,
       isBeat:             false,
       beatIntensity:      beatIntensityInternal,
-      // Legacy band energies — kept for updateVisualState() backward compat.
-      bass:  0.08,
-      mid:   0.04,
-      high:  0.02,
     };
     return;
   }
 
   // Read current FFT magnitudes into freqData (0–255 per bin).
-  // Still needed for: spectral flux onset detection, legacy band energies.
-  // Chroma is now sourced from Meyda — not from this buffer.
+  // Used for spectral flux onset detection. Chroma / amplitude / brightness
+  // are sourced from Meyda — not from this buffer.
   analyser.getByteFrequencyData(freqData);
 
   // --- Chroma extraction (via Meyda) ---
@@ -900,11 +1137,6 @@ function updateAudioData() {
   const spectralBrightness = latestMeydaFeatures && latestMeydaFeatures.spectralCentroid != null
     ? latestMeydaFeatures.spectralCentroid / (audioCtx.sampleRate / 2)
     : 0.3;
-
-  // --- Legacy band energies (backward compat with updateVisualState) ---
-  const bass = getBandEnergy(freqData, 0,   10);
-  const mid  = getBandEnergy(freqData, 11,  100);
-  const high = getBandEnergy(freqData, 101, 512);
 
   // --- Onset detection (spectral flux — unchanged from M2) ---
   // Still reads from freqData directly; Meyda cannot provide this because
@@ -946,11 +1178,6 @@ function updateAudioData() {
     spectralBrightness,
     isBeat,
     beatIntensity,
-    // Legacy band energies — kept for updateVisualState() backward compat.
-    // Will be removed when the rendering section is rebuilt.
-    bass,
-    mid,
-    high,
   };
 }
 
