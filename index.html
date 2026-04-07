@@ -68,11 +68,26 @@
        Always visible during playback — no hover reveal in Milestone 1/2.
        ===================================================================== -->
   <div id="controls" class="hidden">
+
+    <!-- Progress bar: full-width scrubber positioned flush with the top edge
+         of the controls bar. Absolutely positioned so it doesn't disturb the
+         controls-inner flex layout. JS sets fill width and handle left% each
+         timeupdate event, and handles click/drag seeking. -->
+    <div id="progress-bar">
+      <!-- Filled portion — width% driven by currentTime / duration -->
+      <div id="progress-fill"></div>
+      <!-- Circular drag handle — left% driven by the same fraction -->
+      <div id="progress-handle"></div>
+    </div>
+
     <div class="controls-inner">
 
-      <!-- Left: track display name (file extension stripped in main.js) -->
+      <!-- Left: track display name + elapsed / total time display -->
       <div class="controls-left">
         <span id="track-name">No track loaded</span>
+        <!-- Elapsed / total time — updated by main.js on timeupdate events.
+             Shows 0:00 / 0:00 before a track is loaded. -->
+        <span id="time-display">0:00 / 0:00</span>
       </div>
 
       <!-- Centre: play/pause toggle button.
