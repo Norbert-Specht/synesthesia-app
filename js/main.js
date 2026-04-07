@@ -6,10 +6,10 @@
 // Milestone 2: Web Audio API integration — real-time frequency extraction,
 //              amplitude tracking, spectral flux onset detection. All values
 //              collected into a single `audioData` object each frame.
-// Milestone 3: Full rebuild — chroma feature extraction (12 pitch class
-//              energies per frame), dominant/secondary pitch detection,
-//              spectral brightness. audioData expanded with pitch-driven
-//              fields. Aurora rendering rebuild follows in next steps.
+// Milestone 3: Full rebuild — Meyda.js replaces hand-rolled chroma extraction.
+//              Chroma (12 pitch class energies), RMS amplitude, and spectral
+//              centroid now sourced from Meyda's callback. Own spectral flux
+//              onset detection retained. Aurora rendering rebuild follows.
 //
 // Architecture overview:
 //   loadAudioFile()
@@ -388,6 +388,21 @@ function drawFrame() {
 //       ↓  connect()
 //   AudioContext.destination            — speakers / headphones
 //
+//   Meyda analyzer                      — taps sourceNode directly;
+//       runs on its own buffer schedule  provides chroma, rms, spectralCentroid
+//
+// Why Meyda for chroma instead of raw FFT bucketing:
+//   Hand-rolling chroma by assigning FFT bins to pitch classes via the equal
+//   temperament formula produces severe aliasing — C# dominated almost every
+//   frame regardless of the music. The root cause is structural: linear Hz
+//   bin spacing means higher pitch classes accumulate far more bins than lower
+//   ones, and overtone bleed from every played note spreads energy across all
+//   12 classes simultaneously. Perceptual weighting and a tighter frequency
+//   ceiling improved this but couldn't fully solve it. Meyda uses a proper
+//   constant-Q filterbank — logarithmically spaced filters that match the
+//   equal temperament scale — giving each pitch class equal resolution and
+//   suppressing overtone bleed at the source.
+//
 // Important: createMediaElementSource() can only be called ONCE per audio
 // element. The source node persists across track changes — only the audio
 // element's src changes. This is why initAudioContext() guards with a flag.
@@ -524,25 +539,32 @@ let beatIntensityInternal = 0;
 // read by the aurora render loop and (from M3) by the color pipeline.
 let audioData = { ...IDLE_AUDIO_DATA };
 
-// --- Chroma state ---
+// --- Chroma / Meyda state ---
 
-// Bin-to-pitch-class lookup table — maps each FFT bin index to a pitch class
-// index (0–11) or -1 if the bin falls outside the useful musical frequency
-// range (~60–4200 Hz). Built once in initAudioContext() because it requires
-// the AudioContext's actual sampleRate, which varies by browser and device.
-let binToPitchClass = null;   // Int8Array[1024], allocated in initAudioContext()
+// Meyda analyzer instance — created in initAudioContext() once the AudioContext
+// and source node are ready. Meyda taps sourceNode directly and runs on its own
+// internal buffer schedule (one callback per bufferSize samples, ≈46ms at
+// 44100 Hz with bufferSize 2048). It is NOT polled from the render loop — it
+// fires asynchronously and we read the most recent result each frame.
+let meydaAnalyzer = null;
 
-// Smoothed chroma vector — lerped toward raw chroma each frame at CHROMA_LERP_RATE.
-// Initialised to 0.05 (the idle level) so the aurora starts in its ambient state.
-// Persistent across frames — never reallocated — so lerp continuity is preserved.
-const smoothedChroma = new Float32Array(12).fill(0.05);
+// The most recently received feature set from Meyda's callback.
+// Null until the first callback fires (typically within one buffer length of
+// playback starting — imperceptibly fast in practice). updateAudioData() uses
+// idle fallback values if this is null.
+let latestMeydaFeatures = null;
 
-// Scratch arrays for computeChroma() — pre-allocated at module load to avoid
-// creating new typed arrays on every frame, which would trigger garbage collection
-// 60 times per second and cause stuttering.
-const chromaSums        = new Float32Array(12);   // weighted magnitude sum per pitch class
-const chromaCounts      = new Int32Array(12);     // contributing FFT bin count per pitch class
-const chromaWeightSums  = new Float32Array(12);   // sum of bin weights per pitch class (for weighted avg normalization)
+// Smoothed chroma vector — lerped toward Meyda's raw chroma each frame at
+// CHROMA_LERP_RATE. Initialised to 0.05 (the idle level) so the aurora starts
+// in its ambient state. Persistent across frames — never reallocated — so lerp
+// continuity is preserved across Meyda callback intervals.
+//
+// Why lerp if Meyda already smooths internally?
+//   Meyda's chroma reflects the energy in a single fixed-size buffer (2048
+//   samples). Between buffers, the value is static — not interpolated. Our
+//   lerp bridges the gaps between Meyda callbacks, giving the visual system a
+//   continuously changing value to read each frame rather than a stepped one.
+let smoothedChroma = new Float32Array(12).fill(0.05);
 
 // Timestamp of the last debug log line — throttles console output to once/second.
 let debugLastLogTime = 0;   // DEBUG — remove after testing
@@ -597,40 +619,45 @@ function initAudioContext() {
   // timeDomainData length = fftSize = 2048
   timeData         = new Uint8Array(analyser.fftSize);
 
-  // --- Build bin-to-pitch-class lookup table ---
+  // --- Create Meyda analyzer ---
   //
-  // Maps each FFT bin index to a pitch class (0–11) using equal temperament,
-  // or -1 if the bin is outside the musically useful frequency range.
+  // Meyda.createMeydaAnalyzer() attaches directly to sourceNode and runs its
+  // own processing pipeline on a fixed buffer schedule — independent of the
+  // render loop's requestAnimationFrame cadence. The callback fires once per
+  // bufferSize samples (2048 / 44100 Hz ≈ 46ms). Between callbacks, the render
+  // loop reads the most recent latestMeydaFeatures object, which may be up to
+  // one buffer interval stale — imperceptible at ~46ms lag.
   //
-  // Formula (equal temperament, A4 = 440 Hz as reference):
-  //   semitones = 12 × log2(frequency / 440)
-  //   pitchClass = ((round(semitones) + 9) mod 12 + 12) mod 12
+  // Features requested:
+  //   'chroma'          — 12-element array; energy per pitch class (0.0–1.0),
+  //                       index 0 = C, index 11 = B. Normalized so the maximum
+  //                       value across all 12 classes equals 1.0.
+  //   'rms'             — root mean square amplitude of the buffer (0.0–1.0).
+  //                       Replaces our hand-rolled getRMSAmplitude().
+  //   'spectralCentroid'— weighted mean frequency in Hz. Divided by Nyquist
+  //                       (sampleRate / 2) to normalize to 0.0–1.0 as a
+  //                       timbre brightness proxy.
   //
-  //   The +9 offset adjusts from A-relative (semitones=0 → A) to
-  //   C-relative (index 0 → C). The double-mod-and-add-12 ensures the
-  //   result is always positive — JavaScript's % can return negatives.
-  //
-  // Built here (not at module load) because sampleRate is only known after
-  // AudioContext creation — browsers may use 44100 or 48000 Hz.
-  //
-  // Excluded frequency ranges:
-  //   < 60 Hz   — sub-bass rumble; fundamental pitch too ambiguous for chroma
-  //   > 2000 Hz — most musical pitch information lives below 2kHz; above this,
-  //               overtone content increasingly dominates over fundamentals,
-  //               causing all 12 pitch classes to accumulate similar energy.
-  //               Narrowed from 4200 Hz after observing uniform chroma values.
-  binToPitchClass = new Int8Array(analyser.frequencyBinCount).fill(-1);
-  const binHz = audioCtx.sampleRate / analyser.fftSize;   // Hz per FFT bin
-
-  for (let i = 0; i < analyser.frequencyBinCount; i++) {
-    const freq = i * binHz;
-    if (freq < 60 || freq > 2000) continue;   // outside useful musical pitch range
-
-    // log2(freq/440) gives distance in octaves from A4.
-    // × 12 converts to semitones. Round to nearest semitone.
-    const semitones = 12 * Math.log2(freq / 440);
-    binToPitchClass[i] = ((Math.round(semitones) + 9) % 12 + 12) % 12;
-  }
+  // Why we keep our own spectral flux onset detection instead of using Meyda:
+  //   Onset detection requires comparing consecutive frame snapshots —
+  //   previousFreqData vs currentFreqData — at the render loop's cadence.
+  //   Meyda's callback fires asynchronously on a fixed buffer schedule, not
+  //   per render frame, so it cannot reliably detect frame-to-frame transients
+  //   the way the AnalyserNode + spectral flux approach does.
+  meydaAnalyzer = Meyda.createMeydaAnalyzer({
+    audioContext: audioCtx,
+    source:       sourceNode,
+    bufferSize:   2048,
+    featureExtractors: ['chroma', 'rms', 'spectralCentroid'],
+    callback: (features) => {
+      // Guard: only store if chroma was successfully extracted.
+      // Meyda may pass null features during initialization or on buffer errors.
+      if (features && features.chroma) {
+        latestMeydaFeatures = features;
+      }
+    },
+  });
+  meydaAnalyzer.start();
 }
 
 
@@ -685,77 +712,6 @@ function getRMSAmplitude(data) {
 
 
 // ================================
-// AUDIO ANALYSIS — CHROMA FEATURE EXTRACTION
-//
-// Computes a 12-element chroma vector from the current FFT frame.
-// Each element is the normalized weighted-average energy at one pitch class
-// (C, C#, D ... B) across all contributing FFT bins in the valid range.
-//
-// --- The uniform chroma problem ---
-// Without weighting, all 12 pitch classes accumulate similar energy because:
-//   1. Higher frequency bins carry many overlapping overtones from multiple
-//      notes simultaneously. Every played note's 3rd, 4th, 5th... harmonic
-//      falls in the upper range and bleeds across all pitch classes.
-//   2. Normalizing by bin count doesn't fix this — high-frequency bins are
-//      MORE numerous (linear Hz spacing vs logarithmic pitch spacing) so they
-//      dominate the average for every pitch class equally.
-//
-// --- The fix: perceptual bin weighting ---
-// Each bin's magnitude is multiplied by a weight that decreases linearly from
-// 1.0 (bin 0) to 0.0 (bin 512) before being bucketed:
-//
-//   weight(i) = Math.max(0, 1 - binIndex / 512)
-//
-// This emphasizes the low-frequency bins where fundamental pitches live and
-// progressively reduces the contribution of higher bins where overtones
-// dominate. The weighted sum is normalized by the sum of weights (not by
-// bin count) so the result is a proper weighted average.
-//
-// Combined with a tighter frequency ceiling (2000 Hz) that excludes the most
-// overtone-dense upper range, this produces a chroma vector with significantly
-// more spread between the dominant and non-dominant pitch classes.
-//
-// Uses pre-allocated scratch arrays (chromaSums, chromaCounts, chromaWeightSums)
-// to avoid any heap allocation on the hot path.
-// ================================
-
-function computeChroma(data) {
-  // Clear scratch arrays — these are reused every frame.
-  chromaSums.fill(0);
-  chromaCounts.fill(0);
-  chromaWeightSums.fill(0);
-
-  // Accumulate weighted FFT magnitudes per pitch class.
-  for (let i = 0; i < data.length; i++) {
-    const pc = binToPitchClass[i];
-    if (pc < 0) continue;   // bin outside valid musical range (60–2000 Hz)
-
-    // Perceptual weight: linearly decreases from 1.0 at bin 0 to 0.0 at bin 512.
-    // Emphasizes fundamentals (lower bins) over overtones (higher bins).
-    // Bins above 512 would get weight 0, but the lookup table already excludes
-    // those via the 2000 Hz ceiling, so the Math.max guard is just a safety net.
-    const weight = Math.max(0, 1 - i / 512);
-
-    chromaSums[pc]       += data[i] * weight;   // weighted magnitude
-    chromaWeightSums[pc] += weight;             // accumulated weight for normalization
-    chromaCounts[pc]     += 1;                  // unweighted count (for guard only)
-  }
-
-  // Normalize each pitch class to 0.0–1.0 using weighted average.
-  // Dividing by (weightSum × 255) gives the weighted average fractional
-  // magnitude — directly comparable across pitch classes regardless of how
-  // many bins or how much weight each pitch class accumulated.
-  const chroma = new Float32Array(12);
-  for (let pc = 0; pc < 12; pc++) {
-    chroma[pc] = chromaWeightSums[pc] > 0
-      ? chromaSums[pc] / (chromaWeightSums[pc] * 255)
-      : 0;
-  }
-  return chroma;
-}
-
-
-// ================================
 // AUDIO ANALYSIS — DOMINANT PITCH DETECTION
 //
 // Finds the dominant and secondary pitch classes from the smoothed chroma
@@ -786,37 +742,6 @@ function getDominantPitches(chroma) {
   const secondaryPitches = candidates.slice(1, 3).map(c => c.pitch);
 
   return { dominantPitch, secondaryPitches };
-}
-
-
-// ================================
-// AUDIO ANALYSIS — SPECTRAL BRIGHTNESS
-//
-// A simple proxy for timbre brightness — how "bright" or "dark" the current
-// sound is. Computed as the ratio of high-frequency energy (bins 200–512,
-// ≈4300–11000 Hz) to total energy (bins 0–512).
-//
-// Higher values → bright, treble-heavy sounds (bright strings, cymbals,
-//                                               bright synth pads, sibilance)
-// Lower values  → dark, bass-heavy sounds (cello, bass guitar, kick drum,
-//                                          muted piano, warm pads)
-//
-// Per the research, timbre modifies *saturation and lightness* of a synesthete's
-// color — not the hue itself. This value feeds the saturation modifier in
-// the color pipeline (Milestone 3 visual rebuild).
-// ================================
-
-function computeSpectralBrightness(data) {
-  let totalEnergy = 0;
-  let highEnergy  = 0;
-
-  for (let i = 0; i <= 512; i++) {
-    totalEnergy += data[i];
-    if (i >= 200) highEnergy += data[i];   // upper bins only
-  }
-
-  // Guard against division by zero during silence.
-  return totalEnergy > 0 ? highEnergy / totalEnergy : 0;
 }
 
 
@@ -898,11 +823,13 @@ function detectOnset(currentFreqData) {
 // ================================
 // AUDIO ANALYSIS — UPDATE (called every frame from drawFrame)
 //
-// Reads the latest FFT and time-domain data from the AnalyserNode, runs
-// all analysis functions, and writes results into the global audioData object.
+// Each frame: reads the latest FFT data from the AnalyserNode for band
+// energies and onset detection, reads the latest Meyda callback result for
+// chroma, RMS, and spectral centroid, and writes everything into audioData.
 //
-// New in M3: chroma extraction, dominant pitch detection, spectral brightness.
-// Kept from M2: RMS amplitude, spectral flux onset detection, band energies.
+// New in M3 (Meyda refactor): chroma, amplitude, and spectralBrightness now
+// come from latestMeydaFeatures rather than manual FFT analysis.
+// Kept from M2: spectral flux onset detection, band energies (legacy).
 //
 // Falls back to idle values when paused or not yet loaded, so the aurora
 // continues its ambient animation rather than freezing.
@@ -933,17 +860,22 @@ function updateAudioData() {
     return;
   }
 
-  // Read current FFT magnitudes into freqData (0–255 per bin)
+  // Read current FFT magnitudes into freqData (0–255 per bin).
+  // Still needed for: spectral flux onset detection, legacy band energies.
+  // Chroma is now sourced from Meyda — not from this buffer.
   analyser.getByteFrequencyData(freqData);
 
-  // Read current waveform samples into timeData (0–255, 128 = silence)
-  analyser.getByteTimeDomainData(timeData);
-
-  // --- Chroma extraction ---
-  // Compute raw chroma from this frame's FFT data, then lerp smoothedChroma
-  // toward the raw values. The renderer always reads smoothedChroma — never
-  // raw — to prevent flickering on rapid harmonic changes.
-  const rawChroma = computeChroma(freqData);
+  // --- Chroma extraction (via Meyda) ---
+  //
+  // Meyda provides chroma as a 12-element array (index 0 = C, index 11 = B),
+  // each value 0.0–1.0, normalized so the loudest pitch class in the buffer
+  // equals 1.0. We lerp smoothedChroma toward the new raw values each frame
+  // to bridge the gaps between Meyda's buffer-rate callbacks (~46ms intervals)
+  // and the render loop's per-frame cadence (~16ms at 60fps).
+  //
+  // If latestMeydaFeatures is null (Meyda hasn't fired its first callback yet),
+  // we hold smoothedChroma at its current values — no lerp step this frame.
+  const rawChroma = latestMeydaFeatures ? latestMeydaFeatures.chroma : smoothedChroma;
   for (let i = 0; i < 12; i++) {
     smoothedChroma[i] = lerp(smoothedChroma[i], rawChroma[i], CHROMA_LERP_RATE);
   }
@@ -951,20 +883,32 @@ function updateAudioData() {
   // Detect dominant and secondary pitch classes from smoothed chroma.
   const { dominantPitch, secondaryPitches } = getDominantPitches(smoothedChroma);
 
-  // --- Spectral brightness (timbre proxy) ---
-  // Ratio of high-frequency energy to total energy. Feeds the saturation
-  // modifier in the color pipeline (brighter sound → more saturated color).
-  const spectralBrightness = computeSpectralBrightness(freqData);
+  // --- Amplitude (via Meyda RMS) ---
+  // Meyda's rms value is already 0.0–1.0 — no normalization needed.
+  // Falls back to 0.04 (idle level) before the first Meyda callback fires.
+  const amplitude = latestMeydaFeatures
+    ? latestMeydaFeatures.rms
+    : 0.04;
+
+  // --- Spectral brightness (via Meyda spectralCentroid) ---
+  // spectralCentroid is the weighted mean frequency in Hz. Dividing by the
+  // Nyquist frequency (sampleRate / 2) normalizes it to 0.0–1.0.
+  // Higher values → brighter, more treble-heavy sound (strings, cymbals).
+  // Lower values  → darker, bass-heavy sound (cello, bass guitar, kick drum).
+  // Per the research, timbre modifies saturation + lightness, not hue.
+  // Falls back to 0.3 (neutral) before the first Meyda callback fires.
+  const spectralBrightness = latestMeydaFeatures && latestMeydaFeatures.spectralCentroid != null
+    ? latestMeydaFeatures.spectralCentroid / (audioCtx.sampleRate / 2)
+    : 0.3;
 
   // --- Legacy band energies (backward compat with updateVisualState) ---
   const bass = getBandEnergy(freqData, 0,   10);
   const mid  = getBandEnergy(freqData, 11,  100);
   const high = getBandEnergy(freqData, 101, 512);
 
-  // --- RMS amplitude ---
-  const amplitude = getRMSAmplitude(timeData);
-
-  // --- Onset detection ---
+  // --- Onset detection (spectral flux — unchanged from M2) ---
+  // Still reads from freqData directly; Meyda cannot provide this because
+  // onset detection requires per-render-frame snapshots, not buffer-rate callbacks.
   const { isBeat, beatIntensity } = detectOnset(freqData);
 
   // --- DEBUG: throttled console logging (once per second) ---
@@ -972,20 +916,21 @@ function updateAudioData() {
   const debugNow = performance.now();   // DEBUG
   if (debugNow - debugLastLogTime >= 1000) {   // DEBUG
     debugLastLogTime = debugNow;   // DEBUG
-    const rawStr  = Array.from(rawChroma).map(v => v.toFixed(3)).join(', ');   // DEBUG
-    const smthStr = Array.from(smoothedChroma).map(v => v.toFixed(3)).join(', ');   // DEBUG
-    const domName = dominantPitch >= 0 ? PITCH_CLASS_NAMES[dominantPitch] : '(none)';   // DEBUG
-    const secNames = secondaryPitches.length > 0   // DEBUG
+    const meydaReady = latestMeydaFeatures ? 'yes' : 'no';   // DEBUG
+    const rawStr     = Array.from(rawChroma).map(v => v.toFixed(3)).join(', ');   // DEBUG
+    const smthStr    = Array.from(smoothedChroma).map(v => v.toFixed(3)).join(', ');   // DEBUG
+    const domName    = dominantPitch >= 0 ? PITCH_CLASS_NAMES[dominantPitch] : '(none)';   // DEBUG
+    const secNames   = secondaryPitches.length > 0   // DEBUG
       ? secondaryPitches.map(p => `${p}(${PITCH_CLASS_NAMES[p]})`).join(', ')   // DEBUG
       : '(none)';   // DEBUG
     const chromaMax    = Math.max(...smoothedChroma);   // DEBUG
     const chromaMin    = Math.min(...smoothedChroma);   // DEBUG
     const chromaSpread = (chromaMax - chromaMin).toFixed(3);   // DEBUG
+    console.log(`[Meyda]           ready: ${meydaReady} | rms: ${amplitude.toFixed(3)} | centroid (norm): ${spectralBrightness.toFixed(3)}`);   // DEBUG
     console.log(`[Chroma raw]      ${rawStr}`);   // DEBUG
     console.log(`[Chroma smoothed] ${smthStr}`);   // DEBUG
-    console.log(`[Chroma spread]   max: ${chromaMax.toFixed(3)} | min: ${chromaMin.toFixed(3)} | spread: ${chromaSpread} (target: ≥0.6)`);   // DEBUG
+    console.log(`[Chroma spread]   max: ${chromaMax.toFixed(3)} | min: ${chromaMin.toFixed(3)} | spread: ${chromaSpread}`);   // DEBUG
     console.log(`[Pitch]           dominant: ${dominantPitch} (${domName}) | secondary: ${secNames}`);   // DEBUG
-    console.log(`[Brightness]      spectralBrightness: ${spectralBrightness.toFixed(3)}`);   // DEBUG
   }   // DEBUG
   if (isBeat) {   // DEBUG
     console.log(`🎵 ONSET — beatIntensity: ${beatIntensity.toFixed(3)}`);   // DEBUG
@@ -1100,10 +1045,17 @@ playPauseBtn.addEventListener('click', () => {
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 
   if (audioPlayer.paused) {
+    // Restart Meyda when resuming — it was stopped on pause to avoid processing
+    // silence and populating latestMeydaFeatures with noise-floor chroma values.
+    if (meydaAnalyzer) meydaAnalyzer.start();
     audioPlayer.play();
     setPlayState(true);
   } else {
     audioPlayer.pause();
+    // Stop Meyda on pause — no audio to analyze, no need to run the callback.
+    // latestMeydaFeatures retains its last value; updateAudioData() uses idle
+    // fallback while paused regardless (the !audioPlayer.paused guard fires first).
+    if (meydaAnalyzer) meydaAnalyzer.stop();
     setPlayState(false);
   }
 });
