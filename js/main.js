@@ -273,6 +273,13 @@ function spawnRibbon(pitchClass, role) {
     // Without this, all ribbons would sway in unison and look mechanical.
     timeOffset: Math.random() * Math.PI * 2,
 
+    // Per-ribbon shape parameters — randomized at spawn so no two ribbons
+    // ever move or curve the same way. Read by drawRibbon() each frame.
+    waveFreq1:   1.2 + Math.random() * 1.6,    // primary sine spatial frequency;  range 1.2–2.8
+    waveFreq2:   0.5 + Math.random() * 0.9,    // secondary sine spatial frequency; range 0.5–1.4
+    driftSpeed:  0.12 + Math.random() * 0.14,  // time-based lateral drift rate;    range 0.12–0.26
+    wobbleRatio: 0.25 + Math.random() * 0.30,  // secondary wave amplitude fraction; range 0.25–0.55
+
     spawnTime:  performance.now(),
   };
 }
@@ -560,20 +567,23 @@ function drawRibbon(ribbon, time) {
     const progress = i / STEPS;
     const y        = canvas.height - progress * canvas.height;
 
-    // Dual-frequency lateral drift: two sine waves at different frequencies and
-    // time rates produce an irregular, organic weaving motion. A single sine
-    // wave would look mechanical and repetitive.
-    const phase1 = progress * Math.PI * 2 * 1.8 + time * 0.18 + ribbon.timeOffset;
-    const phase2 = progress * Math.PI * 2 * 0.9 + time * 0.11 + ribbon.timeOffset * 0.7;
+    // Dual-frequency lateral drift using per-ribbon shape parameters stored
+    // at spawn time. waveFreq1/2 control spatial curvature frequency;
+    // driftSpeed controls how fast the ribbon sways over time; wobbleRatio
+    // scales the secondary wave's amplitude relative to the primary.
+    // These values differ for every ribbon — no two ever move the same way.
+    const phase1 = progress * Math.PI * 2 * ribbon.waveFreq1 + time * ribbon.driftSpeed       + ribbon.timeOffset;
+    const phase2 = progress * Math.PI * 2 * ribbon.waveFreq2 + time * ribbon.driftSpeed * 0.61 + ribbon.timeOffset * 0.7;
     const xAmp   = canvas.width * 0.055;
     const x      = ribbon.xFraction * canvas.width
                    + Math.sin(phase1) * xAmp
-                   + Math.sin(phase2) * xAmp * 0.35;
+                   + Math.sin(phase2) * xAmp * ribbon.wobbleRatio;
 
     // Thickness noise: 5 sine cycles along the height create natural pinch
     // points and swells. ±32% variation keeps it subtle but visible.
     const thickNoise = 1 + Math.sin(progress * Math.PI * 5 + time * 0.25) * 0.32;
-    const baseThick  = canvas.width * 0.018 * ribbon.thickness;
+    // Raised from 0.018 → 0.055: broad aurora curtain width instead of a strand.
+    const baseThick  = canvas.width * 0.055 * ribbon.thickness;
     // Amplitude modulates thickness: quiet = thinner, loud = wider.
     // 0.6 floor keeps the ribbon visible at silence; ×0.8 gives +40% at peak.
     const thick = baseThick * thickNoise * (0.6 + audioData.amplitude * 0.8);
@@ -619,19 +629,33 @@ function drawRibbon(ribbon, time) {
 
     ctx.globalAlpha = pt.pointOpacity;
 
-    // Pass 1: outer glow — horizontal gradient, secondary color at edges,
-    // primary color at centre (Option D).
-    const glowGrad = ctx.createLinearGradient(pt.x - pt.thick, 0, pt.x + pt.thick, 0);
+    // Pass 1: atmospheric bloom — diffuse secondary-pitch halo that bleeds far
+    // beyond the ribbon body. radius = thick × 18, capped alpha 0.12 so it
+    // reads as a wide tint rather than a hard edge. Drawn first (behind all
+    // other passes) so the tighter glow and core render on top.
+    const bloomRadius = pt.thick * 18;
+    const bloomGrad   = ctx.createLinearGradient(pt.x - bloomRadius, 0, pt.x + bloomRadius, 0);
+    bloomGrad.addColorStop(0.0, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+    bloomGrad.addColorStop(0.5, `hsla(${glowH},${glowS}%,${glowL}%,0.12)`);
+    bloomGrad.addColorStop(1.0, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+    ctx.fillStyle = bloomGrad;
+    ctx.fillRect(pt.x - bloomRadius, pt.y - 2, bloomRadius * 2, 4);
+
+    // Pass 2: main glow — broad halo, secondary color at edges blending to
+    // primary color at centre (Option D). radius = thick × 8 so the
+    // atmospheric gradient fills a wide band around the ribbon core.
+    const glowRadius = pt.thick * 8;
+    const glowGrad   = ctx.createLinearGradient(pt.x - glowRadius, 0, pt.x + glowRadius, 0);
     glowGrad.addColorStop(0.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
     glowGrad.addColorStop(0.25, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
     glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.85)`);
     glowGrad.addColorStop(0.75, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
     glowGrad.addColorStop(1.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
     ctx.fillStyle = glowGrad;
-    ctx.fillRect(pt.x - pt.thick, pt.y - 2, pt.thick * 2, 4);
+    ctx.fillRect(pt.x - glowRadius, pt.y - 2, glowRadius * 2, 4);
 
-    // Pass 2: bright core — narrow white gradient; the luminous spine.
-    // 18% of the glow thickness gives a tight, glowing centre line.
+    // Pass 3: bright core — narrow white gradient; the luminous spine.
+    // 18% of the ribbon thickness gives a tight, glowing centre line.
     const coreThick = pt.thick * 0.18;
     const coreGrad  = ctx.createLinearGradient(pt.x - coreThick, 0, pt.x + coreThick, 0);
     coreGrad.addColorStop(0.0, 'rgba(255,255,255,0)');
