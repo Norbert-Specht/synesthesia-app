@@ -1,7 +1,17 @@
 # Audio Analysis Architecture — Synesthesia App
 
 > Living document. Update whenever the audio analysis pipeline changes.
-> Last updated: Milestone 3 — chroma feature extraction added.
+> Last updated: Milestone 3 — Meyda.js replaces hand-rolled chroma extraction.
+
+---
+
+## Why Meyda.js
+
+The original hand-rolled chroma extraction used raw FFT bin bucketing with a bin-to-pitch-class lookup table. Despite multiple iterations (bin weighting, frequency ceiling reduction, threshold raising), it produced a fundamental problem called **pitch class aliasing** — C# dominated almost every frame regardless of musical content.
+
+**Root cause:** The equal temperament mapping distributes FFT bins unevenly across pitch classes. At 44100Hz with fftSize 2048, some pitch classes receive more bins than others, and those pitch classes appear artificially stronger. Additionally, overtone bleed from higher frequencies distributed energy across all pitch classes simultaneously, keeping the spread between max and min chroma values at 0.15–0.28 (target was ≥ 0.6).
+
+**Why Meyda.js fixes this:** Meyda handles FFT windowing, normalization, and overtone compensation correctly. After switching, the chroma spread reached 0.6–0.9 on clear harmonic content, and the dominant pitch changed meaningfully across the session (9 different pitch classes observed vs C# locked for ~19/21 readings previously).
 
 ---
 
@@ -16,21 +26,16 @@ AnalyserNode  (fftSize: 2048, smoothingTimeConstant: 0.3)
     ↓ connect()
 AudioContext.destination  (speakers)
 
-Every frame:
-AnalyserNode
-    → getByteFrequencyData()    → chroma extraction (12 pitch class energies)
-                                → spectral brightness (timbre proxy)
-    → getByteTimeDomainData()   → RMS amplitude
-                                → spectral flux onset detection
-    → audioData {
-        chroma[12],          — energy per pitch class C through B (0.0–1.0 each)
-        dominantPitch,       — index of highest energy pitch class (0–11)
-        secondaryPitches[],  — indices of next 1–2 most active pitch classes
-        amplitude,           — RMS amplitude (0.0–1.0)
-        spectralBrightness,  — proxy for timbre brightness (0.0–1.0)
-        isBeat,              — true only on onset detection frame
-        beatIntensity,       — decaying intensity value post-onset
-      }
+Meyda analyzer (parallel tap on sourceNode):
+    bufferSize: 2048
+    features: ['chroma', 'rms', 'spectralCentroid']
+    callback: stores result in latestMeydaFeatures
+
+AnalyserNode (direct, independent):
+    getByteFrequencyData() → spectral flux onset detection
+    (kept independent — Meyda has no onset detector)
+
+Every frame → updateAudioData() assembles audioData object
 ```
 
 ---
@@ -38,121 +43,75 @@ AnalyserNode
 ## AnalyserNode Configuration
 
 ### fftSize: 2048
-1024 frequency bins. Bin resolution ≈ 21.5 Hz per bin at 44100 Hz. Chosen for good frequency resolution without excessive CPU cost.
+1024 frequency bins. ~21.5 Hz per bin at 44100Hz. Good frequency resolution without excessive CPU cost.
 
 ### smoothingTimeConstant: 0.3
-Low enough to let transients through clearly — important for onset detection. May be raised to 0.5 in M3 tuning if visuals feel jittery.
+Low enough to let transients through for onset detection. The default 0.8 prevented bass values from dropping between kicks, making onset detection mathematically unreachable on dense/compressed music.
 
 ---
 
-## Chroma Feature Extraction
+## Meyda Features
 
-### What Chroma Is
-
-Chroma features represent the energy present at each of the 12 musical pitch classes (C, C#, D, D#, E, F, F#, G, G#, A, A#, B) regardless of octave. A chroma vector tells us *which notes* are active in the music at any moment, without caring about which octave they're in.
-
-This is the foundation of the pitch-to-color system. It is what makes the visualization work across all musical genres — we don't need to detect specific notes or chords explicitly, we simply measure which pitch classes are most energetically present each frame.
-
-### Mapping FFT Bins to Pitch Classes
-
-Each FFT frequency bin maps to a musical pitch class using the equal temperament formula:
-
+### chroma
+12-element array (Float32Array) representing energy at each pitch class:
 ```
-frequency = binIndex × (sampleRate / fftSize)
-            ≈ binIndex × 21.5 Hz  (at 44100 Hz)
-
-pitchClass = round(12 × log2(frequency / referenceFrequency)) mod 12
-             where referenceFrequency = 440 Hz (A4)
+index: 0=C, 1=C#, 2=D, 3=D#, 4=E, 5=F, 6=F#, 7=G, 8=G#, 9=A, 10=A#, 11=B
 ```
+Normalized 0.0–1.0. Meyda handles windowing and overtone compensation internally.
 
-This mapping is computed once at initialization and stored as a lookup table — not recalculated every frame.
+**Smoothing:** Raw Meyda chroma is lerped at rate `0.05` into `smoothedChroma` each frame. This prevents the dominant pitch from flickering between adjacent pitch classes during sustained chords.
 
-### Chroma Vector
+### rms
+Root Mean Square amplitude. Perceptually accurate loudness measure. Used for:
+- Ribbon height and thickness modulation
+- Color saturation scaling
+- Dynamics-driven origin fade point
 
-The output is an array of 12 normalized values (0.0–1.0), one per pitch class:
+### spectralCentroid
+Perceptually weighted center of the frequency spectrum. Proxy for timbre brightness.
+
+**Normalization issue:** Raw spectralCentroid from Meyda at 44100Hz is in the range ~0.001–0.010 when divided by `sampleRate / 2`. Multiply by 100 before using as `spectralBrightness` to get a 0.0–1.0 range. This is a known quirk of how Meyda reports this value.
+
+---
+
+## Dominant Pitch Detection
 
 ```javascript
-chroma = [
-  C_energy,   // index 0
-  Cs_energy,  // index 1  (C#)
-  D_energy,   // index 2
-  Ds_energy,  // index 3  (D#)
-  E_energy,   // index 4
-  F_energy,   // index 5
-  Fs_energy,  // index 6  (F#)
-  G_energy,   // index 7
-  Gs_energy,  // index 8  (G#)
-  A_energy,   // index 9
-  As_energy,  // index 10 (A#)
-  B_energy,   // index 11
-]
+getDominantPitches(smoothedChroma):
+  → filter: pitch classes below CHROMA_MIN_ENERGY (0.25) are ignored
+  → sort remaining by energy descending
+  → return {
+      dominantPitch:    index of highest energy pitch class
+      secondaryPitches: array of next 1-2 most active
+    }
 ```
 
-### Dominant and Secondary Pitch Detection
+**Minimum energy threshold (0.25):** Prevents low-energy ambient FFT noise from driving color changes. A pitch class must have at least 25% of maximum possible energy to be considered active.
 
-Each frame, the chroma vector is sorted to find the most active pitch classes:
-
-```javascript
-dominantPitch     = argmax(chroma)           // index of highest energy
-secondaryPitch1   = argmax(chroma, exclude: dominantPitch)
-secondaryPitch2   = argmax(chroma, exclude: [dominantPitch, secondaryPitch1])
-```
-
-A minimum energy threshold (e.g. 0.15) filters out noise — pitch classes below this threshold are ignored even if they are the highest available.
-
-### Smoothing
-
-Raw chroma values can jump sharply frame-to-frame. Each pitch class energy is lerped toward its raw value at a slow rate (0.05) to prevent the dominant pitch from flickering between adjacent pitch classes during sustained chords.
-
----
-
-## Spectral Brightness (Timbre Proxy)
-
-Timbre-color synesthesia affects saturation and lightness rather than hue. We approximate timbre brightness using the ratio of high-frequency energy to total energy:
-
-```
-spectralBrightness = sum(freqData[200..512]) / sum(freqData[0..512])
-```
-
-Higher values → brighter, more treble-heavy sound (strings, bright synths, cymbals)
-Lower values → darker, more bass-heavy sound (bass guitar, cello, kick drum)
-
-This is used in the color pipeline to modulate saturation of the rendered ribbon color.
-
----
-
-## RMS Amplitude
-
-Root Mean Square of time-domain waveform samples. Measures perceived loudness. Used to drive ribbon height, saturation swell, and the dynamics-driven ribbon origin point.
-
-```
-amplitude = √( Σ((sample - 128)² / 128²) / N )
-```
+**Chroma smoothing rate (0.05):** Slow enough to prevent flicker on fast harmonic changes, fast enough to respond to genuine key changes within 1–2 seconds.
 
 ---
 
 ## Spectral Flux Onset Detection
 
-### Why Spectral Flux
+Kept independent of Meyda — runs directly on `getByteFrequencyData()` output each frame.
 
-The original Milestone 2 delta method watched for bass energy spikes — essentially a kick drum detector. This fails on classical, jazz, acoustic, and ambient music.
+### Why spectral flux instead of bass threshold
 
-Spectral flux measures the total positive change in the entire frequency spectrum between consecutive frames. Any sudden increase anywhere — kick drum, piano attack, guitar strum, brass hit — contributes to the flux value.
+The original delta-method bass detector was essentially a kick drum detector — it watched for sharp upward spikes in bass energy only. It failed on classical, jazz, acoustic, and ambient music where rhythm lives in other frequency ranges.
 
-### How It Works
-
+Spectral flux measures total positive change across the entire frequency spectrum between consecutive frames:
 ```
 flux = Σ max(0, freqData[i] - previousFreqData[i])   for all bins i
 ```
-
-An onset fires when flux exceeds a dynamic threshold (rolling median × multiplier) and a minimum cooldown has elapsed.
+Any sudden increase anywhere — kick drum, piano attack, guitar strum, brass hit — contributes. Works across all genres.
 
 ### Parameters
 
-| Parameter | Value | Notes |
+| Parameter | Value | Rationale |
 |---|---|---|
-| `FLUX_HISTORY_SIZE` | 43 frames | ~700ms of history |
-| `FLUX_THRESHOLD_MULTIPLIER` | 1.5 | Tune up for fewer triggers, down for more |
+| `FLUX_HISTORY_SIZE` | 43 frames | ~700ms history for rolling median |
+| `FLUX_THRESHOLD_MULTIPLIER` | 1.5 | Onset fires when flux is 1.5× recent median |
 | `ONSET_COOLDOWN_MS` | 100ms | Max ~10 onsets/second |
 | `ONSET_DECAY` | 0.88 | beatIntensity halves in ~5 frames |
 
@@ -160,37 +119,55 @@ An onset fires when flux exceeds a dynamic threshold (rolling median × multipli
 
 ## The audioData Object
 
-Written every frame by `updateAudioData()`, read by the ribbon system and render loop.
+Written every frame by `updateAudioData()`. Read by both render modes and ribbon lifecycle systems.
 
 ```javascript
 audioData = {
-  chroma:             Float32Array(12),  // pitch class energies, 0.0–1.0
-  dominantPitch:      0–11,              // pitch class index with most energy
+  chroma:             Float32Array(12),  // smoothed pitch class energies 0.0–1.0
+  dominantPitch:      0–11,              // pitch class with most energy
   secondaryPitches:   [0–11, 0–11],      // next 1–2 most active pitch classes
-  amplitude:          0.0–1.0,           // RMS loudness
-  spectralBrightness: 0.0–1.0,           // timbre brightness proxy
+  amplitude:          0.0–1.0,           // RMS from Meyda
+  spectralBrightness: 0.0–1.0,           // spectralCentroid × 100, clamped
   isBeat:             boolean,           // true on onset detection frame only
   beatIntensity:      0.0–1.0,           // decaying post-onset intensity
 }
 ```
 
 ### Idle Fallback
-
-When paused or not yet loaded, audioData uses safe idle values so the aurora continues ambient animation rather than freezing. Chroma defaults to a gentle equal distribution across all pitch classes at low energy.
+When paused or not yet loaded:
+```javascript
+{
+  chroma: Float32Array(12).fill(0.05),  // equal low energy — ambient animation
+  dominantPitch: 0,
+  secondaryPitches: [7, 4],             // C, G, E — a stable idle chord
+  amplitude: 0.04,
+  spectralBrightness: 0.3,
+  isBeat: false,
+  beatIntensity: beatIntensityInternal * ONSET_DECAY,  // continues decaying
+}
+```
 
 ---
 
 ## How audioData Maps to Visuals
 
-| audioData field | Visual behavior |
+### Aurora Mode
+| Field | Visual effect |
 |---|---|
 | `dominantPitch` | Primary ribbon hue via profile lookup |
 | `secondaryPitches` | Secondary ribbon hues + glow gradient tint |
-| `chroma` | Weighted blend for background glow color |
-| `amplitude` | Ribbon height, saturation swell, origin fade point |
-| `spectralBrightness` | Saturation modifier in color pipeline |
-| `beatIntensity` | Brightness pulse across all ribbons |
-| `isBeat` | Triggers onset flash event |
+| `amplitude` | Ribbon thickness, saturation, origin fade point |
+| `spectralBrightness` | Lightness modifier in color pipeline |
+| `beatIntensity` | Global brightness pulse on all ribbons |
+
+### Glow Stick Mode
+| Field | Visual effect |
+|---|---|
+| `dominantPitch` | Solo individual stick, thickest |
+| `secondaryPitches` | Cluster spawning, center + satellites |
+| `chroma` | Tertiary pitch detection (energy > 0.35) |
+| `amplitude` | Stick thickness, color saturation |
+| `beatIntensity` | Core flare — surges toward pure white on onset |
 
 ---
 
@@ -198,11 +175,11 @@ When paused or not yet loaded, audioData uses safe idle values so the aurora con
 
 | Question | Status | Notes |
 |---|---|---|
-| smoothingTimeConstant tuning | 🔲 Revisit M3 | May raise to 0.5 if chroma flickers |
-| Chroma smoothing lerp rate | 🔲 Tune in M3 | Start at 0.05 — adjust based on dominant pitch stability |
-| Minimum chroma threshold | 🔲 Tune in M3 | Start at 0.15 — prevents noise from driving color |
-| Per-band onset detection | 🔲 Future | Could fire separate events per frequency zone |
-| Tempo estimation | 🔲 Future | Inter-onset intervals could estimate BPM |
+| smoothingTimeConstant tuning | 🔲 Revisit after M3 visual tuning | May raise to 0.5 if pitch flickers visually |
+| Chroma lerp rate (0.05) | 🔲 Revisit after M3 | May raise to 0.07–0.08 if pitch changes feel sluggish |
+| CHROMA_MIN_ENERGY (0.25) | 🔲 Revisit after M3 | Test on classical and ambient music |
+| Per-band onset events | 🔲 Future | Separate onset per frequency zone for richer response |
+| Tempo estimation | 🔲 Future | Inter-onset intervals → BPM for animation speed sync |
 
 ---
 

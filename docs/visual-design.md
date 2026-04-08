@@ -1,277 +1,240 @@
 # Visual Design — Synesthesia App
 
 > Living document. Update whenever a visual design decision is made or revised.
-> Last updated: Milestone 3 rebuild — pitch-driven dynamic ribbon system.
+> Last updated: Milestone 3 — dual render mode system (Aurora + Glow Sticks).
 
 ---
 
-## The Core Metaphor: Aurora Borealis
+## Why Two Render Modes Exist
 
-The visualization is modeled after the **aurora borealis** (northern lights). This metaphor solves the central design challenge of chromesthesia visualization — multiple simultaneous colors — elegantly and naturally.
+During Milestone 3 development, an honest technical assessment revealed that Canvas 2D has a fundamental ceiling for aurora-quality rendering. The soft, luminous, atmospheric diffusion of real aurora borealis photographs requires either:
 
-**Why aurora works:**
-- Natural **vertical ribbon structure** — curtains of light rising from the horizon, not horizontal bands
-- **Asymmetric** by nature — ribbons appear at irregular horizontal positions
-- **Translucency and blending** — ribbons overlap without canceling each other
-- **Organic movement** — fluid, wave-like, never mechanical
-- **Irregular thickness** — ribbons pinch, swell, and vary along their length
-- **Atmospheric depth** — the sky behind the ribbons has color and life, not flat black
+- **WebGL fragment shaders** — correct tool, significant complexity increase
+- **CSS blur filters** — simpler but inconsistent across browsers and carries performance cost
 
----
+Rather than shipping a compromised aurora or blocking progress on a WebGL rewrite, a second render mode was developed that plays directly to Canvas 2D's strengths.
 
-## Screen Layout
+A diagnostic test (rendering one ribbon with hardcoded vivid colors and source-over transparency) proved the rendering pipeline could produce genuinely luminous, electric output — but it looked more like a neon glow stick than an aurora. This observation became the Glow Stick mode concept.
 
-Full-screen. No UI chrome during playback. Controls appear on hover at the bottom.
-
-### Layer Stack (back to front)
-
-```
-1. Sky background    — dynamic deep blue-teal gradient, music-responsive
-2. Stars             — subtle static points, not music-reactive
-3. Background glow   — very wide, soft blend of all active pitch colors
-4. Secondary ribbons — 1–2 dimmer ribbons, subordinate pitch classes
-5. Primary ribbon    — dominant pitch class, brightest, most defined
-6. UI controls       — hover-reveal bar at bottom (z-index above canvas)
-```
+**Both modes are permanent features** — the mode switch is exposed to users as a UI element, not hidden as a developer tool. Users choose which experience they prefer.
 
 ---
 
-## Ribbon System
+## Shared Visual Foundation
 
-### Orientation
+Both modes share:
+- Same pitch-to-color profile system (Rimsky-Korsakov HSL hues)
+- Same dynamic ribbon lifecycle (born, promoted, demoted, faded)
+- Same sky background and stars
+- Same origin fade driven by amplitude dynamics
+- Same `buildPolygonPath()` helper
 
-Ribbons are **vertical** — they rise from the bottom edge of the screen upward. This matches real aurora photographs and avoids the "stacked horizontal stripes" problem of the previous implementation.
-
-Each ribbon is rendered as a sine wave path that sweeps **vertically** across the canvas height, with lateral drift along the x-axis creating the characteristic ribbon curl and movement.
-
-### Ribbon Anatomy
-
-Each ribbon is rendered in two passes:
-
-**Pass 1 — Outer glow** (wide, soft, translucent)
-A wide gradient field around the ribbon center. This is where secondary pitch colors live. The gradient runs from the dominant pitch color at the inner edge outward toward the secondary pitch colors at the outer edge, then fades to transparent.
-
-```
-Transparent → Secondary pitch color → Dominant pitch color → Core →
-Dominant pitch color → Secondary pitch color → Transparent
-```
-
-**Pass 2 — Bright core** (narrow, near-neon, hot center)
-A tight bright line at the ribbon center. Near-white at the very hottest point, becoming the pure dominant pitch hue as it moves outward a few pixels. This is the "neon" quality seen in aurora photographs.
-
-### Ribbon Roles
-
-| Role | Count | Opacity | Thickness | Color |
-|---|---|---|---|---|
-| **Primary** | 1 | 0.85–1.0 | Full | Dominant pitch class → profile |
-| **Secondary** | 1–2 | 0.35–0.55 | 55–70% of primary | 2nd and 3rd most active pitch classes |
-| **Background glow** | 1 | 0.08–0.18 | Full screen width | Weighted blend of all active pitches |
-
-### Ribbon Lifecycle States
-
-Each ribbon object carries a lifecycle state that determines how it renders and whether it persists:
-
-```javascript
-// Lifecycle states
-'rising'   — newly spawned, opacity animating from 0 to target
-'active'   — fully visible, responding to music
-'demoting' — was primary, now becoming secondary (dims and thins)
-'fading'   — being retired, opacity animating to 0
-'dead'     — opacity reached 0, removed from pool
-```
-
-**Transitions:**
-- New dominant pitch detected → spawn new primary ribbon in `rising` state
-- Previous primary → `demoting` → becomes secondary when transition completes
-- Displaced secondary → `fading` → removed when opacity reaches 0
-- Maximum 3 ribbons alive at once (1 primary + 2 secondary)
-
-### Horizontal Positioning
-
-Ribbons are positioned asymmetrically across the screen width. When a new ribbon spawns, its x-position is chosen with controlled randomness:
-
-- The screen is divided into loose thirds (left, center, right)
-- New ribbon spawns in a third that isn't already occupied by the primary
-- Within that third, position has ±15% random variation
-- This ensures ribbons never stack on top of each other and never feel mechanically distributed
-
-### Irregular Thickness
-
-Ribbon thickness is not uniform along its length. A secondary noise function modulates the thickness at each point along the ribbon, creating pinching and swelling — matching the natural irregularity of real aurora curtains.
-
-```
-thickness(y) = baseThickness × (1 + noiseFunction(y, time) × 0.4)
-```
-
-### Dynamics and Ribbon Origin
-
-The point where a ribbon appears to "begin" (its lowest visible point) is modulated by amplitude:
-
-- **Quiet passages** — ribbon origin appears higher up the screen (shorter, less imposing ribbon)
-- **Loud passages** — ribbon origin drops toward the bottom edge (ribbon appears to rise from the horizon)
-
-This connects musical dynamics directly to the visual sense of scale and atmosphere.
-
-*Implementation detail: the ribbon is always rendered from the bottom edge; the "origin" effect is achieved by fading the ribbon's opacity from zero at the bottom up to full opacity at a variable height threshold driven by amplitude.*
+What differs is only the rendering of each ribbon — its width, glow shape, opacity values, and timing.
 
 ---
 
-## Color System
+## Mode A — Aurora
 
-### The Color Pipeline
+### Concept
+Full-screen aurora borealis. Vertical ribbon curtains of light rising from the bottom edge of the screen. Ribbons are broad, soft, atmospheric.
 
-Every rendered color is the output of a sequential pipeline running in real-time:
+### Target Visual
+Real aurora borealis photographs — broad vivid curtains with a bright core and proportional ribbon-shaped glow. Sky visible between ribbons.
 
-```
-1. DOMINANT PITCH CLASS
-   Source: chroma analysis → highest energy pitch class (C, C#, D ... B)
-   Output: pitch class index (0–11)
+### Known Limitation
+Canvas 2D maximum quality estimated at 50–60% of photographic reference. The missing quality is soft luminous edge diffusion, which requires WebGL. Planned as a future upgrade (see Open Design Questions).
 
-        ↓
-
-2. PROFILE LOOKUP
-   Source: active synesthete profile (e.g. Rimsky-Korsakov)
-   Output: base HSL hue (0–360°) for this pitch class
-
-        ↓
-
-3. OCTAVE REGISTER
-   Source: dominant frequency of the pitch class
-   Output: lightness modifier — higher octave = +lightness
-
-        ↓
-
-4. TIMBRE MODULATION
-   Source: spectral brightness (ratio of high-frequency energy)
-   Output: saturation shift ±15% based on instrument brightness
-
-        ↓
-
-5. AMPLITUDE MODULATION
-   Source: RMS amplitude
-   Output: saturation scaled 30%–100% with overall loudness
-
-        ↓
-
-6. ONSET FLASH
-   Source: beatIntensity (decaying value from spectral flux detector)
-   Output: lightness boost up to +20% on onset, decaying quickly
-
-        ↓
-
-7. FINAL COLOR
-   Rendered as HSL with opacity per ribbon role
-   (translucency enables natural blending between ribbons)
-```
-
-### Why HSL
-
-- **Hue** maps to pitch class (the synesthetic color)
-- **Saturation** maps to dynamics (loud = vivid, quiet = pale)
-- **Lightness** maps to octave register and onset intensity
-
-RGB and hex are output formats only. All internal color logic uses HSL.
-
-### Secondary Pitch Colors in the Glow
-
-The glow gradient of the primary ribbon incorporates secondary pitch colors. The blend is weighted by chroma energy:
+### Ribbon Anatomy — Three Polygon Passes
 
 ```
-glowColor = weightedBlend(
-    dominantPitchColor   × 0.65,
-    secondaryPitch1Color × 0.25,
-    secondaryPitch2Color × 0.10
-)
+Pass 1 — Wide atmospheric haze
+  buildPolygonPath(edges, 7)
+  Very low opacity (0.07–0.11 center)
+  source-over compositing
+  Creates the faint color cast around the ribbon
+
+Pass 2 — Main glow body
+  buildPolygonPath(edges, 3)
+  Medium opacity (0.38–0.55)
+  source-over compositing
+  Dominant pitch color at center, secondary pitch color at edges
+  This is Option D — harmonic complexity expressed as color gradient
+
+Pass 3 — Bright solid core
+  buildPolygonPath(edges, 1)
+  High opacity (0.82–0.96)
+  source-over compositing
+  Near-white at hottest center point
+  Pure pitch color at edges
 ```
 
-This creates a natural, research-accurate representation of how synesthetes experience chords — one dominant color with harmonic nuance in the atmosphere around it.
+### Why source-over Not screen
+
+`screen` blending was tried first — it adds colors like light physics. However:
+- Screen blending only adds visible light when source colors are both bright AND have meaningful opacity
+- Medium-brightness colors on a dark background with screen produce muddy intermediate mixes
+- Adjacent ribbons' overlapping screen glows merged into solid shapes that darkened rather than brightened areas
+- `source-over` with genuine transparency (sky visible through ribbons) is more accurate to how aurora actually looks — it IS translucent gas, not additive light
+
+### Geometry
+- Vertical sine wave path from bottom to top
+- Lateral sway amplitude: `canvas.width * 0.018` — nearly vertical, gentle drift
+- Core half-width: `canvas.width * 0.032` × thickness noise
+- Thickness noise along ribbon length creates organic pinching and swelling
+- Dynamics-driven origin fade: quiet = higher start, loud = rises from horizon
+
+### Ribbon Pool
+- Maximum 3 ribbons simultaneously
+- 1 primary (dominant pitch) + up to 2 secondary
+- Lifecycle: rising → active → demoting → fading → dead
+- 500ms debounce before pitch transition triggers new ribbon
+
+### Color Pipeline
+```
+Dominant pitch class → profile hue (h)
+Saturation: Math.max(base.s, 72) + amplitude * 18   clamped 95
+Lightness:  Math.max(base.l, 48) + amplitude * 14   clamped 72
+            + beatIntensity * 10 (onset flash)
+```
+Profile hue is preserved exactly (chromesthesia identity). Saturation and lightness are forced upward to ensure colors are vivid enough to glow on a dark background.
 
 ---
 
-## Movement and Animation
+## Mode B — Glow Sticks
 
-### Principles
+### Concept
+Neon glow sticks — thin, intensely hot vertical lines with a wide vivid blur that "chases" the core. The core appears instantly with full energy. The glow follows more slowly, like it's catching up.
 
-- **No hard cuts** — all transitions interpolated via lerp
-- **Organic, not mechanical** — dual sine waves with different frequencies and offsets
-- **Always moving** — even during silence, ribbons breathe gently
-- **Music-responsive** — every visual parameter has an audio driver
+### Why This Works Better Than Aurora in Canvas 2D
+The glow stick aesthetic is precisely what Canvas 2D polygon rendering does well:
+- Sharp high-contrast thin core → narrow polygon with near-white center gradient
+- Wide transparent outer glow → large polygon with very low opacity transparent gradient
+- The contrast between a crisp core and a wide soft halo reads as luminosity without needing blur filters
 
-### Animation Layers
+### Ribbon Anatomy — Three Polygon Passes
 
-| Layer | Driver | Behavior |
-|---|---|---|
-| **Ribbon drift** | Time + sine functions | Slow lateral sway of ribbon body |
-| **Thickness pulse** | Zone energy + onset | Ribbon swells on loud moments |
-| **Origin fade** | Amplitude | Bottom fade point rises/falls with dynamics |
-| **Onset flash** | beatIntensity | All ribbons brighten briefly on onset |
-| **Color transition** | Pitch class change | Hue lerps when dominant pitch shifts |
-| **Sky gradient** | Amplitude + pitch blend | Background hue shifts with musical energy |
-| **Star twinkle** | Optional slow noise | Very subtle, not music-reactive |
+```
+Pass 1 — Wide outer glow (the "chasing" blur)
+  buildPolygonPath(edges, 18)   ← much wider than aurora
+  Very low opacity (0.06–0.10 center)
+  source-over compositing
+  Creates the wide atmospheric haze around the stick
 
-### Lerp Rates
+Pass 2 — Inner intense glow
+  buildPolygonPath(edges, 5)
+  Medium opacity (0.32–0.58)
+  source-over compositing
+  The vivid colored glow immediately around the core
 
-| Parameter | Rate | Perceptual character |
-|---|---|---|
-| Ribbon opacity (rising) | 0.03 | Slow bloom — ~2 seconds to full |
-| Ribbon opacity (fading) | 0.02 | Slower fade — graceful exit |
-| Color hue transition | 0.04 | Smooth, not snapping |
-| Thickness | 0.08 | Medium response |
-| Onset intensity | 0.20 | Fast attack, handled by decay in audio |
-| Sky gradient | 0.02 | Very slow, atmospheric |
+Pass 3 — Hot core (near-white)
+  buildPolygonPath(edges, 1)
+  High opacity (0.88–0.98)
+  source-over compositing
+  Pure white (hsl 0, 0%, 97%) at center — genuinely hot
+  Pitch color at edges
+  On onset: center surges to pure white, then settles back
+```
+
+### Timing — Asymmetric Appear/Fade
+
+This is the key character of glow sticks vs aurora:
+- **Appear:** lerp rate `0.15` — fast, almost instant. Energy arrives suddenly.
+- **Fade:** lerp rate `0.022` — slow linger. The glow chases the fading core.
+- **Onset flare:** `beatIntensity > 0.5` → core lightness surges +22%. The stick flares white on musical attacks.
+
+### Cluster System — Option C
+
+Each pitch class spawns a cluster based on its musical role:
+
+**Dominant pitch → Solo individual**
+- 1 ribbon, `glowThickness: 1.0`, full intensity
+- Positioned in an unoccupied screen zone
+
+**Secondary pitches → Option C cluster**
+- 3 ribbons: 1 center + 2 satellites
+- Center: `glowThickness: 0.68`
+- Satellite 1 (tight): offset 2.8–5.5% of screen width, `glowThickness: 0.45`
+- Satellite 2 (loose): offset 7–13% of screen width, `glowThickness: 0.35`
+- One satellite left, one right (randomized)
+- Together they read as one harmonic group but individual sticks are distinguishable
+
+**Tertiary pitches (chroma > 0.35) → Solo individual**
+- 1 ribbon, `glowThickness: 0.38`, reduced intensity
+- These represent ambient harmonic content not in the top 2 pitch classes
+
+**Why Option C spacing:**
+Mimics how chord notes relate — a root with surrounding tones at irregular harmonic distances. Tight satellite = close harmonic interval. Loose satellite = wider harmonic interval. More organic than evenly spaced, more readable than random.
+
+### Ribbon Pool
+- Maximum 9 glow sticks simultaneously
+- Separate lifecycle function `updateGlowstickLifecycle()` — does not share state with aurora pool
+- Same 500ms debounce for pitch changes
+
+### Color Pipeline
+```
+Hue from profile (pitch class identity — sacred, always preserved)
+Saturation: 88 + amplitude * 10   (always high — neon quality)
+Lightness:  55 + amplitude * 12 + beatIntensity * 8
+```
+Glow sticks are always vivid. The profile hue determines which color family. Saturation and lightness are fixed high for the neon aesthetic.
 
 ---
 
-## Sky Background
+## Shared Systems
 
-### Base Color
+### Sky Background
+- Base: deep near-black with blue-teal cast
+- Top: `hsl(skyHue, 55%, 11%)`
+- Mid (0.75): `hsl(skyHue, 40%, 8%)`
+- Bottom: `hsl(215, 45%, 6%)`
+- `skyHue` lerps toward weighted average of active pitch hues × amplitude at rate 0.04
+- Stars: 180 randomly positioned points, cached, not music-reactive
 
-Deep near-black with a blue-teal cast: `hsl(220, 45%, 6%)` as the base. Not pure black — it has the atmospheric quality of a real night sky.
-
-### Dynamic Shift
-
-Each frame, the sky gradient target hue is pulled slightly toward the weighted average of all active pitch class hues, scaled by amplitude. At low amplitude the sky barely shifts. At high amplitude it picks up more color from the music.
-
+### Dynamics-Driven Origin Fade
+Ribbon/stick appears to rise from the bottom edge on loud passages, starts higher on quiet ones:
 ```
-skyHue = lerp(skyHue, weightedActiveHueAverage, amplitude × 0.015)
+originFadeHeight = canvas.height * (0.80 - audioData.amplitude * 0.50)
+originOpacity = clamp(distFromBottom / originFadeHeight, 0, 1)
 ```
 
-### Stars
-
-Randomly positioned points, rendered once and cached. Very low opacity (0.3–0.7). Optional slow twinkle via a noise function on opacity. Not reactive to music — they provide a stable sense of depth and distance.
+### buildPolygonPath(leftEdge, rightEdge, widthMultiplier)
+Helper used by both modes. Traces left edge top→bottom, right edge bottom→top, creating a closed polygon expanded outward from center by `widthMultiplier`. One `ctx.fill()` call — no arc() calls anywhere. This is what solved the original performance degradation (hundreds of arc() calls per frame caused stutter after ~20 seconds).
 
 ---
 
-## Visual Mood Reference
+## UI — Mode Switch
 
-Target aesthetic:
-- **Scientific accuracy** — grounded in chromesthesia research
-- **Natural beauty** — aurora borealis as visual template
-- **Emotional resonance** — colors feel consistent with the music
-- **Restraint** — visualization accompanies music, never competes
+Pill-shaped segmented control, top right corner, always visible and active.
 
-### What to Avoid
-- Hard geometric shapes or sharp edges
+- Position: `top: 24px`, `right: 28px`, `z-index: 30`
+- Style: glass/blur treatment matching controls bar
+- Two buttons: "Aurora" | "Glow"
+- Active state: cyan accent background + glow
+- Inactive state: transparent, secondary text color
+- May be redesigned when landing page is reworked (Milestone 5)
+
+---
+
+## What to Avoid (Both Modes)
+
+- Hard geometric shapes or sharp edges in the background
 - Rapid strobing (epilepsy risk)
-- Oversaturated neon that reads as a club visualizer
-- Static elements that don't breathe
 - Perfectly even ribbon spacing (mechanical)
-- Horizontal bands (previous mistake)
+- Horizontal bands or waves (previous mistake — now strictly vertical)
+- `ctx.arc()` in the render loop (performance killer)
+- `screen` compositing on dark colors (produces muddy mixes, not light addition)
 
 ---
 
-## Technical Approach
+## Future — WebGL Aurora Upgrade
 
-### Canvas 2D
-Starting with Canvas 2D. Sufficient for the ribbon system at 60fps on modern hardware. Revisit WebGL if performance becomes a constraint after M3.
+The aurora mode is planned for a WebGL rewrite in a future milestone. A fragment shader would provide:
+- Genuine soft edge diffusion (Gaussian blur per-ribbon, not per-canvas)
+- Internal brightness variation along ribbon length
+- True luminosity — light that feels like it's emitting, not painted
+- Estimated result: 85–95% of photographic reference quality
 
-### Rendering Strategy
-- Sky background rendered first each frame (fillRect with gradient)
-- Stars rendered second (cached point positions)
-- Background glow ribbon rendered third (very wide, low opacity)
-- Secondary ribbons rendered fourth
-- Primary ribbon rendered last (on top)
-- UI controls overlay via CSS z-index (not canvas)
+The audio analysis, ribbon lifecycle, and profile system are all rendering-agnostic — the WebGL upgrade only touches the draw functions.
 
 ---
 
@@ -279,12 +242,13 @@ Starting with Canvas 2D. Sufficient for the ribbon system at 60fps on modern har
 
 | Question | Status | Notes |
 |---|---|---|
-| Canvas 2D vs WebGL | 🔲 Open | Revisit after M3 |
-| Dynamics → ribbon origin exact implementation | 🔲 Open | Bottom-fade approach described above, needs tuning |
-| Star twinkle — music-reactive or not | ✅ Decided | Not reactive — provides stable depth reference |
-| Mobile layout (vertical screen) | 🔲 Open | TBD M5 |
-| Epilepsy / reduced-motion mode | 🔲 Open | Planned M5 |
+| WebGL aurora upgrade | 🔲 Open | Stretch goal after deployment |
+| Mode switch permanent design | 🔲 Open | Pill UI for now, revisit M5 |
+| Mobile layout | 🔲 Open | TBD M5 |
+| Epilepsy / reduced-motion | 🔲 Open | Planned M5 |
+| Landing page redesign | 🔲 Open | Not priority — after core features |
+| Dynamics → origin tuning | 🔲 Open | Implemented, needs perceptual tuning |
 
 ---
 
-*See also: `README.md`, `docs/audio-analysis.md`, `docs/research.md`*
+*See also: `README.md`, `docs/audio-analysis.md`, `docs/research.md`, `docs/future-ideas.md`*
