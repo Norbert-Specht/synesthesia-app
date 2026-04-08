@@ -18,12 +18,14 @@
 //     → audioPlayer.play()
 //
 //   drawFrame()  [requestAnimationFrame loop]
-//     → updateAudioData()           (Meyda + spectral flux → audioData)
-//     → updateRibbonLifecycle()     (spawn / demote / fade ribbons)
-//     → updateRibbonOpacities()     (animate opacity transitions, refresh colors)
-//     → drawBackground()            (sky gradient + stars)
-//     → drawRibbon() × N            (router: aurora → drawRibbonAurora()
-//                                           glowstick → drawRibbonGlowstick())
+//     → updateAudioData()              (Meyda + spectral flux → audioData)
+//     → updateRibbonLifecycle()        (aurora: spawn / demote / fade ribbons)
+//       OR updateGlowstickLifecycle()  (glowstick: spawn clusters, retire old)
+//     → updateRibbonOpacities()        (aurora pool — always runs)
+//       + updateGlowstickOpacities()   (glowstick pool — only in glowstick mode)
+//     → drawBackground()               (sky gradient + stars)
+//     → drawRibbon() × N               (router: aurora → drawRibbonAurora()
+//                                               glowstick → drawRibbonGlowstick())
 // =============================================================================
 
 
@@ -115,6 +117,17 @@ const RIBBON_DEBOUNCE_MS = 500;
 // Matches the research: one dominant color with 1–2 harmonic tints.
 const MAX_RIBBONS = 3;
 
+// Hard cap on simultaneous live glow sticks (separate pool from aurora ribbons).
+// 9 = 1 dominant solo + up to 2 secondary clusters (3 sticks each) + 2 tertiary solos.
+const MAX_GLOWSTICKS = 9;
+
+// Glow stick opacity lerp rates — asymmetric timing is the defining character
+// of the glow stick mode: fast snappy appearance vs slow atmospheric fade.
+//   rising: 0.15  — nearly instant (about 4–5 frames to 50%); energy arrives fast
+//   fading: 0.022 — very slow (about 30 frames to 50%); glow lingers after core fades
+const GLOWSTICK_RISE_RATE = 0.15;
+const GLOWSTICK_FADE_RATE = 0.022;
+
 
 // ================================
 // RIBBON SYSTEM — STATE
@@ -143,6 +156,32 @@ let ribbons = [];
 // A ribbon transition only fires after RIBBON_DEBOUNCE_MS of stability.
 let dominantPitchCandidate     = -1;
 let dominantPitchDebounceStart = 0;
+
+// ================================
+// GLOW STICK POOL STATE
+//
+// Completely separate from the aurora ribbon pool. The two pools never mix —
+// switching modes leaves each pool's ribbons to fade out independently while
+// the new mode's pool starts fresh.
+//
+// Pool structure (max 9 simultaneous sticks):
+//   1 dominant solo      — glowThickness 1.0, full intensity
+//   up to 2 secondaries  — each spawns 3 sticks (center + 2 satellites)
+//   up to 2 tertiaries   — glowThickness 0.38, present when chroma energy > 0.35
+//
+// Dominant is visually strongest (thickest, most opaque) because it represents
+// the pitch class the synesthete perceives as primary. Secondaries form clusters
+// because chord notes aren't isolated — they relate to each other harmonically.
+// Tertiary sticks are thin and dim — ambient harmonic content, not the melody.
+// ================================
+
+// Live glow stick pool — written by updateGlowstickLifecycle().
+let glowsticks = [];
+
+// Separate debounce state for glow stick mode — independent from aurora debounce
+// so switching modes doesn't carry over stale timing state.
+let glowstickPitchCandidate     = -1;
+let glowstickPitchDebounceStart = 0;
 
 // Sky background hue — lerps very slowly toward the weighted average of active
 // ribbon hues. Starts at 220 (deep blue-teal) matching the night sky base color.
@@ -280,6 +319,48 @@ function getAsymmetricX() {
 
 
 // ================================
+// GLOW STICK POOL — BASE X PICKER
+//
+// Equivalent of getAsymmetricX() for the glow stick pool. Picks a horizontal
+// position for a cluster center or solo stick by checking the glowsticks pool
+// (not ribbons) for occupied zones. Satellite positions are then derived from
+// this base by spawnGlowCluster() — they are not chosen independently.
+//
+// Returns: number — x fraction 0.12–0.88
+// ================================
+
+function getGlowstickBaseX() {
+  const zones = [
+    { min: 0.15, max: 0.38 },  // left
+    { min: 0.38, max: 0.62 },  // centre
+    { min: 0.62, max: 0.85 },  // right
+  ];
+
+  // Only cluster centers and solos occupy a zone — satellites don't count
+  // because they're placed relative to their center, not independently.
+  const anchors = glowsticks.filter(
+    s => (s.clusterRole === 'center' || s.clusterRole === 'solo')
+      && s.state !== 'fading' && s.state !== 'dead'
+  );
+
+  const occupiedZoneIndices = new Set();
+  anchors.forEach(s => {
+    zones.forEach((z, i) => {
+      if (s.xFraction >= z.min && s.xFraction < z.max) occupiedZoneIndices.add(i);
+    });
+  });
+
+  const freeZones = zones.filter((_, i) => !occupiedZoneIndices.has(i));
+  const pool      = freeZones.length > 0 ? freeZones : zones;
+  const zone      = pool[Math.floor(Math.random() * pool.length)];
+
+  let x = zone.min + Math.random() * (zone.max - zone.min);
+  x += (Math.random() - 0.5) * 0.06;
+  return Math.max(0.12, Math.min(0.88, x));
+}
+
+
+// ================================
 // RIBBON SYSTEM — SPAWN
 //
 // Creates and returns a new ribbon object for the given pitch class.
@@ -325,7 +406,142 @@ function spawnRibbon(pitchClass, role) {
     wobbleRatio: 0.25 + Math.random() * 0.30,  // secondary wave amplitude fraction; range 0.25–0.55
 
     spawnTime:  performance.now(),
+
+    // --- Glow stick mode properties ---
+    // Set to neutral defaults here; overridden by spawnGlowCluster() when
+    // creating sticks for glow stick mode. Aurora rendering ignores all five.
+
+    // Whether this ribbon belongs to a cluster (secondary pitch group).
+    // Solo sticks (dominant and tertiary) have isClusterMember: false.
+    isClusterMember: false,
+
+    // Position within its cluster: 'solo' | 'center' | 'satellite'.
+    // 'solo'      — dominant or tertiary, no cluster relationship
+    // 'center'    — the main stick of a secondary cluster
+    // 'satellite' — offset sibling of a cluster center, always thinner
+    clusterRole: 'solo',
+
+    // Horizontal offset from cluster center, expressed as a fraction of
+    // canvas width. 0 for solo and center; set to the actual offset distance
+    // for satellites (tight: 0.028–0.055, loose: 0.07–0.13).
+    clusterOffset: 0,
+
+    // Width multiplier applied in drawRibbonGlowstick() to all three polygon
+    // passes. Encodes musical role as visual weight:
+    //   1.0  — dominant (thickest — the pitch you're hearing most clearly)
+    //   0.68 — secondary cluster center
+    //   0.45 — tight satellite
+    //   0.35 — loose satellite
+    //   0.38 — tertiary solo (thinnest — ambient harmonic content)
+    glowThickness: 1.0,
+
+    // Opacity multiplier driven by chroma energy of this pitch class.
+    // Dominant is always 1.0 (full intensity). Secondary and tertiary scale
+    // with their actual chroma energy so quieter pitch classes appear dimmer.
+    glowIntensity: 1.0,
   };
+}
+
+
+// ================================
+// GLOW STICK POOL — CLUSTER SPAWNER
+//
+// Spawns one or more glow sticks into the glowsticks pool for a given pitch
+// class, based on that pitch class's musical role in the current harmony.
+//
+// Three roles produce different visual weight and cluster structure:
+//
+//   'dominant'  — 1 solo stick, glowThickness 1.0.
+//                 Thickest and most opaque because it represents the note
+//                 the listener perceives as the primary pitch.
+//
+//   'secondary' — 3 sticks: 1 center + 2 satellites.
+//                 Cluster mimics how harmonic chord tones relate — one central
+//                 note with surrounding tones at irregular intervals.
+//                 Option C spacing: one satellite tight (2.8–5.5% canvas width),
+//                 one loose (7–13%), randomised left/right so clusters look
+//                 organic rather than mechanically mirrored.
+//
+//   'tertiary'  — 1 solo stick, glowThickness 0.38.
+//                 Thinnest — ambient harmonic content detected in chroma but
+//                 not musically prominent. Dim and background.
+//
+// Parameters:
+//   pitchClass   — integer 0–11; the pitch class to represent
+//   chromaEnergy — 0.0–1.0 chroma energy for this pitch class, drives opacity
+//   role         — 'dominant' | 'secondary' | 'tertiary'
+// ================================
+
+function spawnGlowCluster(pitchClass, chromaEnergy, role) {
+  if (role === 'dominant') {
+    const stick           = spawnRibbon(pitchClass, 'primary');
+    stick.xFraction       = getGlowstickBaseX();
+    stick.isClusterMember = false;
+    stick.clusterRole     = 'solo';
+    stick.clusterOffset   = 0;
+    stick.glowThickness   = 1.0;
+    stick.glowIntensity   = 1.0;
+    stick.targetOpacity   = 0.92;
+    glowsticks.push(stick);
+
+  } else if (role === 'secondary') {
+    // Choose a base x for the cluster, then derive satellite positions from it.
+    const centerX = getGlowstickBaseX();
+
+    // Option C spacing: tight satellite close-in, loose satellite farther out.
+    // Fractional offsets are proportional to canvas width — scale-independent.
+    const tightOffset = 0.028 + Math.random() * (0.055 - 0.028);
+    const looseOffset = 0.07  + Math.random() * (0.13  - 0.07);
+
+    // Randomise which satellite is left vs right to avoid mirror symmetry.
+    const tightSide = Math.random() < 0.5 ? -1 : 1;
+    const looseSide = -tightSide;
+
+    // Center stick — the harmonic root of this secondary pitch group.
+    const center           = spawnRibbon(pitchClass, 'secondary');
+    center.xFraction       = centerX;
+    center.isClusterMember = true;
+    center.clusterRole     = 'center';
+    center.clusterOffset   = 0;
+    center.glowThickness   = 0.68;
+    center.glowIntensity   = chromaEnergy;
+    center.targetOpacity   = 0.76 * chromaEnergy;
+    glowsticks.push(center);
+
+    // Satellite 1 — tight offset; represents a close harmonic interval.
+    const sat1           = spawnRibbon(pitchClass, 'secondary');
+    sat1.xFraction       = Math.max(0.05, Math.min(0.95, centerX + tightSide * tightOffset));
+    sat1.isClusterMember = true;
+    sat1.clusterRole     = 'satellite';
+    sat1.clusterOffset   = tightOffset;
+    sat1.glowThickness   = 0.45;
+    sat1.glowIntensity   = chromaEnergy * 0.8;
+    sat1.targetOpacity   = 0.58 * chromaEnergy;
+    glowsticks.push(sat1);
+
+    // Satellite 2 — loose offset; represents a wider harmonic interval.
+    const sat2           = spawnRibbon(pitchClass, 'secondary');
+    sat2.xFraction       = Math.max(0.05, Math.min(0.95, centerX + looseSide * looseOffset));
+    sat2.isClusterMember = true;
+    sat2.clusterRole     = 'satellite';
+    sat2.clusterOffset   = looseOffset;
+    sat2.glowThickness   = 0.35;
+    sat2.glowIntensity   = chromaEnergy * 0.6;
+    sat2.targetOpacity   = 0.44 * chromaEnergy;
+    glowsticks.push(sat2);
+
+  } else if (role === 'tertiary') {
+    // Single thin solo — ambient harmonic content, not melodically prominent.
+    const stick           = spawnRibbon(pitchClass, 'secondary');
+    stick.xFraction       = getGlowstickBaseX();
+    stick.isClusterMember = false;
+    stick.clusterRole     = 'solo';
+    stick.clusterOffset   = 0;
+    stick.glowThickness   = 0.38;
+    stick.glowIntensity   = chromaEnergy * 0.7;
+    stick.targetOpacity   = 0.38 * chromaEnergy;
+    glowsticks.push(stick);
+  }
 }
 
 
@@ -429,6 +645,122 @@ function updateRibbonLifecycle() {
 
 
 // ================================
+// GLOW STICK POOL — LIFECYCLE MANAGER
+//
+// Called every frame when renderMode === 'glowstick'. Manages the glowsticks
+// pool independently of the aurora ribbon pool — the two never share state.
+//
+// Pool state machine (mirrors aurora lifecycle but with different thresholds):
+//   1. Prune dead sticks.
+//   2. Fast-path: if pool is empty, spawn immediately without debounce.
+//   3. Debounce 500ms before acting on a pitch change.
+//   4. On confirmed dominant pitch change: fade all current sticks,
+//      spawn new clusters for dominant + secondary + tertiary pitches.
+//   5. Retire oldest tertiary solo first when MAX_GLOWSTICKS would be exceeded.
+// ================================
+
+function updateGlowstickLifecycle() {
+  const now         = performance.now();
+  const newDominant = audioData.dominantPitch;
+
+  // Remove fully faded sticks — they no longer contribute to the render.
+  glowsticks = glowsticks.filter(s => s.state !== 'dead');
+
+  // --- Fast-path: empty pool spawns immediately without debounce ---
+  // Prevents the screen being blank for 500ms at track start or mode switch.
+  const hasDominantSolo = glowsticks.some(
+    s => s.glowThickness === 1.0 && s.clusterRole === 'solo'
+      && s.state !== 'fading' && s.state !== 'dead'
+  );
+  if (!hasDominantSolo && newDominant >= 0) {
+    spawnGlowCluster(newDominant, 1.0, 'dominant');
+
+    audioData.secondaryPitches.slice(0, 2).forEach(p => {
+      const energy     = audioData.chroma[p] || 0;
+      const liveCount  = glowsticks.filter(s => s.state !== 'dead').length;
+      if (liveCount + 3 <= MAX_GLOWSTICKS) spawnGlowCluster(p, energy, 'secondary');
+    });
+
+    glowstickPitchCandidate     = newDominant;
+    glowstickPitchDebounceStart = now;
+    return;
+  }
+
+  // --- Debounce: only act on a pitch that has been stable for 500ms ---
+  if (newDominant !== glowstickPitchCandidate) {
+    glowstickPitchCandidate     = newDominant;
+    glowstickPitchDebounceStart = now;
+    return;
+  }
+  if ((now - glowstickPitchDebounceStart) < RIBBON_DEBOUNCE_MS) return;
+
+  // --- Check if the stabilised dominant pitch is already represented ---
+  const currentDominantStick = glowsticks.find(
+    s => s.pitchClass === newDominant
+      && s.glowThickness === 1.0 && s.clusterRole === 'solo'
+      && s.state !== 'fading' && s.state !== 'dead'
+  );
+  if (currentDominantStick) {
+    // Dominant is unchanged — reset debounce and hold.
+    glowstickPitchDebounceStart = now;
+    return;
+  }
+
+  // --- Dominant pitch changed: retire all current sticks, spawn fresh clusters ---
+
+  // Fade out everything currently live (they linger visually via slow fade rate).
+  glowsticks.forEach(s => {
+    if (s.state !== 'fading' && s.state !== 'dead') {
+      s.state         = 'fading';
+      s.targetOpacity = 0;
+    }
+  });
+
+  // Spawn dominant solo.
+  if (newDominant >= 0) spawnGlowCluster(newDominant, 1.0, 'dominant');
+
+  // Spawn secondary clusters (up to 2, each adds 3 sticks).
+  audioData.secondaryPitches.slice(0, 2).forEach(p => {
+    const energy    = audioData.chroma[p] || 0;
+    const liveCount = glowsticks.filter(s => s.state !== 'fading' && s.state !== 'dead').length;
+    if (liveCount + 3 <= MAX_GLOWSTICKS) spawnGlowCluster(p, energy, 'secondary');
+  });
+
+  // Spawn tertiary solos for any pitch class with energy > 0.35 not yet represented.
+  // Retire the oldest tertiary if the pool limit would be exceeded.
+  const livePitches = new Set(
+    glowsticks.filter(s => s.state !== 'fading' && s.state !== 'dead').map(s => s.pitchClass)
+  );
+  audioData.chroma.forEach((energy, pc) => {
+    if (energy <= 0.35 || livePitches.has(pc)) return;
+
+    // Enforce cap — retire oldest tertiary solo to make room if needed.
+    const liveCount = glowsticks.filter(s => s.state !== 'fading' && s.state !== 'dead').length;
+    if (liveCount >= MAX_GLOWSTICKS) {
+      const oldestTertiary = glowsticks
+        .filter(s => s.glowThickness === 0.38 && s.clusterRole === 'solo'
+                  && s.state !== 'fading' && s.state !== 'dead')
+        .sort((a, b) => a.spawnTime - b.spawnTime)[0];
+      if (oldestTertiary) {
+        oldestTertiary.state         = 'fading';
+        oldestTertiary.targetOpacity = 0;
+      } else {
+        return;   // no tertiary to retire — skip this pitch class
+      }
+    }
+
+    const newLiveCount = glowsticks.filter(s => s.state !== 'fading' && s.state !== 'dead').length;
+    if (newLiveCount < MAX_GLOWSTICKS) {
+      spawnGlowCluster(pc, energy, 'tertiary');
+      livePitches.add(pc);
+    }
+  });
+
+  glowstickPitchDebounceStart = now;
+}
+
+
+// ================================
 // RIBBON SYSTEM — OPACITY ANIMATION
 //
 // Called every frame after updateRibbonLifecycle(). Lerps each ribbon's
@@ -461,6 +793,42 @@ function updateRibbonOpacities() {
     if (r.state === 'fading' && r.opacity < 0.005) {
       r.state   = 'dead';
       r.opacity = 0;
+    }
+  });
+}
+
+
+// ================================
+// GLOW STICK POOL — OPACITY ANIMATION
+//
+// Mirrors updateRibbonOpacities() but operates on the glowsticks pool and uses
+// the asymmetric lerp rates that define the glow stick character:
+//   rising  0.15  — fast snappy appearance (energy arrives suddenly)
+//   fading  0.022 — slow atmospheric fade (glow lingers well after core is gone)
+//   active  0.06  — moderate tracking for active/demoting state changes
+//
+// Also refreshes each stick's HSL color each frame so live audio changes
+// (beat flashes, amplitude swells) are reflected in the rendered color.
+// ================================
+
+function updateGlowstickOpacities() {
+  glowsticks.forEach(s => {
+    const rate = s.state === 'rising' ? GLOWSTICK_RISE_RATE
+               : s.state === 'fading' ? GLOWSTICK_FADE_RATE
+               :                        0.06;   // 'active' | 'demoting'
+
+    s.opacity = lerp(s.opacity, s.targetOpacity, rate);
+
+    // Refresh color so beat flashes and amplitude changes are visible in real-time.
+    s.hsl = getProfileColor(s.pitchClass);
+
+    if (s.state === 'rising' && Math.abs(s.opacity - s.targetOpacity) < 0.01) {
+      s.state   = 'active';
+      s.opacity = s.targetOpacity;
+    }
+    if (s.state === 'fading' && s.opacity < 0.005) {
+      s.state   = 'dead';
+      s.opacity = 0;
     }
   });
 }
@@ -963,21 +1331,38 @@ function drawFrame() {
   // Step 1: Read from Web Audio API / Meyda → writes into audioData.
   updateAudioData();
 
-  // Step 2: Spawn, demote, and fade ribbons based on pitch analysis.
-  updateRibbonLifecycle();
+  // Step 2: Advance the active mode's ribbon pool — spawn, demote, and fade.
+  // Each mode manages its own separate pool (ribbons vs glowsticks) and uses
+  // its own debounce state, so switching modes never corrupts the other pool.
+  if (renderMode === 'aurora') {
+    updateRibbonLifecycle();
+  } else {
+    updateGlowstickLifecycle();
+  }
 
-  // Step 3: Animate ribbon opacities and refresh colors from the pipeline.
+  // Step 3: Animate opacities and refresh colors for the active pool.
+  // updateRibbonOpacities() always runs — it harmlessly processes an empty
+  // or fading ribbons pool when in glowstick mode.
+  // updateGlowstickOpacities() only runs in glowstick mode — it uses the
+  // asymmetric rates (0.15 rise / 0.022 fade) that define the glow stick feel.
   updateRibbonOpacities();
+  if (renderMode === 'glowstick') updateGlowstickOpacities();
 
   // Step 4: Draw the night sky background (gradient + stars).
   drawBackground(time);
 
-  // Step 5: Draw ribbons back-to-front.
-  // Secondary ribbons go behind the primary so the primary always reads
-  // as visually dominant — the bright top layer, not buried underneath.
-  [...ribbons]
-    .sort((a, b) => (a.role === 'primary' ? 1 : -1))
-    .forEach(r => drawRibbon(r, time));
+  // Step 5: Draw the active pool back-to-front.
+  // Aurora mode: secondary ribbons behind the primary (role-based sort).
+  // Glow stick mode: thinner sticks behind thicker so dominant is always on top.
+  if (renderMode === 'aurora') {
+    [...ribbons]
+      .sort((a, b) => (a.role === 'primary' ? 1 : -1))
+      .forEach(r => drawRibbon(r, time));
+  } else {
+    [...glowsticks]
+      .sort((a, b) => a.glowThickness - b.glowThickness)   // thinnest drawn first (behind)
+      .forEach(s => drawRibbon(s, time));
+  }
 
   // DIAGNOSTIC ONLY — remove after visual confirmation
   drawDiagnosticRibbon(time);
