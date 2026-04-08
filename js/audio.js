@@ -86,10 +86,12 @@ const PITCH_CLASS_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A',
 const CHROMA_MIN_ENERGY = 0.25;
 
 // Per-frame lerp rate for smoothing raw chroma toward the persistent
-// smoothedChroma array. Slow enough (0.05) to prevent the dominant pitch from
-// flickering between adjacent pitch classes during sustained chords or legato
-// passages, while still responding to real harmonic changes within a second.
-const CHROMA_LERP_RATE = 0.05;
+// smoothedChroma array. 0.12 covers ~50% of the distance to target in ~5 frames
+// (~85ms at 60fps) — fast enough to track melodic note changes in a piano
+// passage (notes ~300–500ms apart) while still preventing single-frame flicker
+// between adjacent pitch classes.
+// Previous value: 0.05 (~14 frames / ~230ms to 50%) — too slow for melody.
+const CHROMA_LERP_RATE = 0.12;
 
 // --- Spectral Flux Onset Detection ---
 //

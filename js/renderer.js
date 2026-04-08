@@ -434,9 +434,14 @@ function drawRibbonAurora(ribbon, time) {
 //   muddy glow sticks at their native values.
 //
 // Three passes (back to front), all source-over:
-//   Pass 1 — Wide outer atmospheric haze  (×22 coreHalfWidth) — exponential falloff, peak at 0.15
-//   Pass 2 — Inner vivid glow             (×7  coreHalfWidth) — front-heavy: 0.75 at 8% in, rapid decay
-//   Pass 3 — Hot core, near-white centre  (×1  coreHalfWidth) — 0.60–0.98 alpha
+//   Pass 1 — Wide outer atmospheric haze  (×22 coreHW) — symmetric, peak at cx
+//   Pass 2 — Inner vivid glow             (×7  coreHW) — symmetric, steep falloff from cx
+//   Pass 3 — Hot core, near-white centre  (×1  coreHW) — symmetric, 0.60–0.98 alpha
+//
+// Gradient alignment rule: every gradient uses createLinearGradient(cx - W, 0, cx + W, 0)
+// and every fillRect uses fillRect(cx - W, top, W * 2, bottom - top). The gradient
+// position 0.5 therefore always coincides with cx — the visual brightness peak of
+// all three passes lands exactly on the core center.
 //
 // Parameters:
 //   ribbon — a glow stick object from the glowsticks pool
@@ -449,10 +454,12 @@ function drawRibbonGlowstick(ribbon, time) {
   // Horizontal center of this stick — fixed at its spawn xFraction; never drifts.
   const cx = ribbon.xFraction * canvas.width;
 
-  // Core half-width — thin like a real neon tube.
-  // glowThickness varies by musical role: 1.0 dominant, 0.68 secondary center,
-  // 0.45 tight satellite, 0.35 loose satellite, 0.38 tertiary.
-  const coreHalfWidth = canvas.width * 0.004 * ribbon.glowThickness;
+  // Width variables — all half-widths from cx.
+  // Every gradient and its matching fillRect use cx ± W so the gradient center
+  // (position 0.5) always sits exactly on cx regardless of glowThickness.
+  const coreHW = canvas.width * 0.004 * ribbon.glowThickness;  // core half-width
+  const glowW  = coreHW * 7;    // inner glow half-width
+  const hazeW  = coreHW * 22;   // outer haze half-width
 
   // Vertical span — full canvas height, no origin fade.
   // Straight tubes run floor to ceiling.
@@ -478,64 +485,103 @@ function drawRibbonGlowstick(ribbon, time) {
 
   // -----------------------------------------------------------------------
   // PASS 1 — Wide outer atmospheric haze
-  // Width: coreHalfWidth × 22 each side — the wide neon bloom.
-  // Exponential falloff: peaks at position 0.15 (close to the gradient edge,
-  // i.e. close to the inner core), then decays rapidly outward. This puts the
-  // haze energy against the core rather than spreading it flatly into a dome.
-  // The gradient reads: bright near center, almost nothing at the outer edge.
+  // Width: hazeW (coreHW × 22) each side.
+  // Symmetric around cx (position 0.5). Gentle dome: peaks at 0.08 × opacity
+  // at the centre, decays slowly outward over the full haze radius.
+  // Provides the soft "light radiating into dark air" atmosphere. Low alpha
+  // so it reads as ambience, not a colored body.
   // -----------------------------------------------------------------------
 
-  const haze     = coreHalfWidth * 22;
-  const hazeGrad = ctx.createLinearGradient(cx - haze, 0, cx + haze, 0);
-  hazeGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  hazeGrad.addColorStop(0.15, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  const hazeGrad = ctx.createLinearGradient(cx - hazeW, 0, cx + hazeW, 0);
+  hazeGrad.addColorStop(0.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  hazeGrad.addColorStop(0.10, `hsla(${h}, ${s}%, ${l}%, ${0.02 * opacity})`);
   hazeGrad.addColorStop(0.25, `hsla(${h}, ${s}%, ${l}%, ${0.04 * opacity})`);
-  hazeGrad.addColorStop(0.4,  `hsla(${h}, ${s}%, ${l}%, ${0.02 * opacity})`);
-  hazeGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  hazeGrad.addColorStop(0.40, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  hazeGrad.addColorStop(0.50, `hsla(${h}, ${s}%, ${l}%, ${0.08 * opacity})`);
+  hazeGrad.addColorStop(0.60, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  hazeGrad.addColorStop(0.75, `hsla(${h}, ${s}%, ${l}%, ${0.04 * opacity})`);
+  hazeGrad.addColorStop(0.90, `hsla(${h}, ${s}%, ${l}%, ${0.02 * opacity})`);
+  hazeGrad.addColorStop(1.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = hazeGrad;
-  ctx.fillRect(cx - haze, top, haze * 2, bottom - top);
+  ctx.fillRect(cx - hazeW, top, hazeW * 2, bottom - top);
 
   // -----------------------------------------------------------------------
   // PASS 2 — Inner vivid glow
-  // Width: coreHalfWidth × 7 each side — the colored body of the neon tube.
-  // Front-heavy: opacity peaks at 0.75 just 8% in from the outer edge (close
-  // to the core), then drops steeply to near-zero at 50% — mirrored on the
-  // right side. Most glow energy lives within the first 18% of gradient width.
-  // This is how real neon looks: intensely colored immediately next to the
-  // glass, falling off exponentially rather than doming symmetrically.
-  // l+8 and l+4 at the inner stops add a brightness step toward the white core.
+  // Width: glowW (coreHW × 7) each side.
+  // Symmetric around cx (position 0.5). Steep falloff: peaks at 0.75 × opacity
+  // at the center (cx), drops to 0.06 at ±2.1× coreHW, nearly zero beyond that.
+  // Most glow energy is concentrated within ±1.5× coreHW of the core, creating
+  // the dense colored halo right against the tube that makes neon look hot.
+  // l+8 at the center and l+4 at the inner shoulders step toward the white core.
   // -----------------------------------------------------------------------
 
-  const glow     = coreHalfWidth * 7;
-  const glowGrad = ctx.createLinearGradient(cx - glow, 0, cx + glow, 0);
-  glowGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  glowGrad.addColorStop(0.08, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 8))}%, ${0.75 * opacity})`);
-  glowGrad.addColorStop(0.18, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 4))}%, ${0.45 * opacity})`);
-  glowGrad.addColorStop(0.32, `hsla(${h}, ${s}%, ${l}%, ${0.18 * opacity})`);
-  glowGrad.addColorStop(0.5,  `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
-  glowGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  const glowGrad = ctx.createLinearGradient(cx - glowW, 0, cx + glowW, 0);
+  glowGrad.addColorStop(0.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  glowGrad.addColorStop(0.30, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  glowGrad.addColorStop(0.40, `hsla(${h}, ${s}%, ${l}%, ${0.28 * opacity})`);
+  glowGrad.addColorStop(0.46, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 4))}%, ${0.52 * opacity})`);
+  glowGrad.addColorStop(0.50, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 8))}%, ${0.75 * opacity})`);
+  glowGrad.addColorStop(0.54, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 4))}%, ${0.52 * opacity})`);
+  glowGrad.addColorStop(0.60, `hsla(${h}, ${s}%, ${l}%, ${0.28 * opacity})`);
+  glowGrad.addColorStop(0.70, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  glowGrad.addColorStop(1.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = glowGrad;
-  ctx.fillRect(cx - glow, top, glow * 2, bottom - top);
+  ctx.fillRect(cx - glowW, top, glowW * 2, bottom - top);
 
   // -----------------------------------------------------------------------
   // PASS 3 — Hot core
-  // Width: exactly coreHalfWidth × 1 — the razor-thin neon filament.
-  // Five stops build a heat gradient from the tube edges to the centre:
+  // Width: exactly coreHW × 1 — the razor-thin neon filament.
+  // Symmetric around cx. Five stops build a heat gradient:
   //   Edges (0.0, 1.0): pitch color at full saturation — the tube wall color
   //   Shoulders (0.3, 0.7): desaturated + pushed toward white — heated zone.
-  //     l + beatIntensity * 12 (already in l) drives these up on strong beats.
+  //     beatIntensity (already in l) drives these up on strong beats.
   //   Centre (0.5): pure near-white hsla(0,0%,97%) — the hottest point.
-  //     Achromatic: the hottest part of any neon plasma is always colorless.
+  //     Achromatic: the hottest plasma of any neon discharge is always colorless.
   // -----------------------------------------------------------------------
 
-  const coreGrad = ctx.createLinearGradient(cx - coreHalfWidth, 0, cx + coreHalfWidth, 0);
+  const coreGrad = ctx.createLinearGradient(cx - coreHW, 0, cx + coreHW, 0);
   coreGrad.addColorStop(0.0, `hsla(${h}, ${s}%, ${l}%, ${(0.60 * opacity).toFixed(3)})`);
   coreGrad.addColorStop(0.3, `hsla(${h}, ${Math.round(s - 20)}%, ${Math.min(99, Math.round(l + 15))}%, ${(0.90 * opacity).toFixed(3)})`);
   coreGrad.addColorStop(0.5, `hsla(0, 0%, 97%, ${(0.98 * opacity).toFixed(3)})`);
   coreGrad.addColorStop(0.7, `hsla(${h}, ${Math.round(s - 20)}%, ${Math.min(99, Math.round(l + 15))}%, ${(0.90 * opacity).toFixed(3)})`);
   coreGrad.addColorStop(1.0, `hsla(${h}, ${s}%, ${l}%, ${(0.60 * opacity).toFixed(3)})`);
   ctx.fillStyle = coreGrad;
-  ctx.fillRect(cx - coreHalfWidth, top, coreHalfWidth * 2, bottom - top);
+  ctx.fillRect(cx - coreHW, top, coreHW * 2, bottom - top);
+
+  // -----------------------------------------------------------------------
+  // NOTE NAME LABEL — diagnostic display for pitch verification
+  // Shows pitch class name (C, C#, D etc.) at the bottom of each glow stick.
+  // Remove this block once pitch detection is verified against known recordings.
+  // -----------------------------------------------------------------------
+
+  const PITCH_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const label = PITCH_NAMES[ribbon.pitchClass];
+
+  const labelSize = 52;
+  const labelPad  = 10;
+  const labelW    = labelSize + labelPad * 2;
+  const labelH    = labelSize + labelPad * 2;
+  const labelX    = cx - labelW / 2;
+  const labelY    = canvas.height - labelH - 12;
+
+  // Dark background square — gives the white text contrast against the canvas.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = ribbon.opacity * 0.82;
+  ctx.fillStyle   = 'rgba(6, 8, 16, 0.88)';
+  ctx.fillRect(labelX, labelY, labelW, labelH);
+
+  // Note name text.
+  ctx.globalAlpha  = ribbon.opacity;
+  ctx.fillStyle    = '#ffffff';
+  ctx.font         = `400 ${labelSize}px 'Plus Jakarta Sans', system-ui, sans-serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, cx, labelY + labelH / 2);
+
+  // Reset text and composite state.
+  ctx.globalAlpha  = 1.0;
+  ctx.textAlign    = 'left';
+  ctx.textBaseline = 'alphabetic';
 
   ctx.globalCompositeOperation = 'source-over';
   ctx.restore();

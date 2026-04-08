@@ -23,9 +23,11 @@ import { renderMode } from './ui.js';
 // ================================
 
 // How long a new dominant pitch must remain stable before triggering a ribbon
-// transition. 500ms smooths over passing tones, ornaments, and vibrato without
-// making genuine harmonic changes feel sluggish.
-const RIBBON_DEBOUNCE_MS = 500;
+// transition. 250ms catches melodic note changes (piano notes at moderate tempo
+// are ~300–500ms apart) while still smoothing over very short passing tones and
+// vibrato. Previous value: 500ms — too long; pitch changes were never detected
+// on melodic content because each note resolved before the debounce fired.
+const RIBBON_DEBOUNCE_MS = 250;
 
 // Hard cap on simultaneous live ribbons (1 primary + up to 2 secondary).
 // Matches the research: one dominant color with 1–2 harmonic tints.
