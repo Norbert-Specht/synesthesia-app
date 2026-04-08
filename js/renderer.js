@@ -434,8 +434,8 @@ function drawRibbonAurora(ribbon, time) {
 //   muddy glow sticks at their native values.
 //
 // Three passes (back to front), all source-over:
-//   Pass 1 — Wide outer atmospheric haze  (×22 coreHalfWidth) — 0.05–0.09 alpha
-//   Pass 2 — Inner vivid glow             (×7  coreHalfWidth) — 0.25–0.55 alpha
+//   Pass 1 — Wide outer atmospheric haze  (×22 coreHalfWidth) — exponential falloff, peak at 0.15
+//   Pass 2 — Inner vivid glow             (×7  coreHalfWidth) — front-heavy: 0.75 at 8% in, rapid decay
 //   Pass 3 — Hot core, near-white centre  (×1  coreHalfWidth) — 0.60–0.98 alpha
 //
 // Parameters:
@@ -478,37 +478,42 @@ function drawRibbonGlowstick(ribbon, time) {
 
   // -----------------------------------------------------------------------
   // PASS 1 — Wide outer atmospheric haze
-  // Width: coreHalfWidth × 22 each side — the wide neon bloom. Low alpha
-  // (0.05–0.09) because this is diffuse atmosphere, not the luminous body.
-  // The extreme width is what creates the "hot source radiating in darkness"
-  // impression — you see the haze long before you see the tube itself.
+  // Width: coreHalfWidth × 22 each side — the wide neon bloom.
+  // Exponential falloff: peaks at position 0.15 (close to the gradient edge,
+  // i.e. close to the inner core), then decays rapidly outward. This puts the
+  // haze energy against the core rather than spreading it flatly into a dome.
+  // The gradient reads: bright near center, almost nothing at the outer edge.
   // -----------------------------------------------------------------------
 
   const haze     = coreHalfWidth * 22;
   const hazeGrad = ctx.createLinearGradient(cx - haze, 0, cx + haze, 0);
-  hazeGrad.addColorStop(0.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  hazeGrad.addColorStop(0.35, `hsla(${h}, ${s}%, ${l}%, ${(0.05 * opacity).toFixed(3)})`);
-  hazeGrad.addColorStop(0.50, `hsla(${h}, ${s}%, ${l}%, ${(0.09 * opacity).toFixed(3)})`);
-  hazeGrad.addColorStop(0.65, `hsla(${h}, ${s}%, ${l}%, ${(0.05 * opacity).toFixed(3)})`);
-  hazeGrad.addColorStop(1.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  hazeGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  hazeGrad.addColorStop(0.15, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  hazeGrad.addColorStop(0.25, `hsla(${h}, ${s}%, ${l}%, ${0.04 * opacity})`);
+  hazeGrad.addColorStop(0.4,  `hsla(${h}, ${s}%, ${l}%, ${0.02 * opacity})`);
+  hazeGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = hazeGrad;
   ctx.fillRect(cx - haze, top, haze * 2, bottom - top);
 
   // -----------------------------------------------------------------------
   // PASS 2 — Inner vivid glow
   // Width: coreHalfWidth × 7 each side — the colored body of the neon tube.
-  // Bright enough to read as the pitch color (0.25–0.55), but transparent
-  // so the sky shows through and overlapping sticks blend additively.
-  // l+5 at the centre is a subtle brightness step toward the white-hot core.
+  // Front-heavy: opacity peaks at 0.75 just 8% in from the outer edge (close
+  // to the core), then drops steeply to near-zero at 50% — mirrored on the
+  // right side. Most glow energy lives within the first 18% of gradient width.
+  // This is how real neon looks: intensely colored immediately next to the
+  // glass, falling off exponentially rather than doming symmetrically.
+  // l+8 and l+4 at the inner stops add a brightness step toward the white core.
   // -----------------------------------------------------------------------
 
   const glow     = coreHalfWidth * 7;
   const glowGrad = ctx.createLinearGradient(cx - glow, 0, cx + glow, 0);
-  glowGrad.addColorStop(0.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  glowGrad.addColorStop(0.20, `hsla(${h}, ${s}%, ${l}%, ${(0.25 * opacity).toFixed(3)})`);
-  glowGrad.addColorStop(0.50, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 5))}%, ${(0.55 * opacity).toFixed(3)})`);
-  glowGrad.addColorStop(0.80, `hsla(${h}, ${s}%, ${l}%, ${(0.25 * opacity).toFixed(3)})`);
-  glowGrad.addColorStop(1.00, `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  glowGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  glowGrad.addColorStop(0.08, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 8))}%, ${0.75 * opacity})`);
+  glowGrad.addColorStop(0.18, `hsla(${h}, ${s}%, ${Math.min(99, Math.round(l + 4))}%, ${0.45 * opacity})`);
+  glowGrad.addColorStop(0.32, `hsla(${h}, ${s}%, ${l}%, ${0.18 * opacity})`);
+  glowGrad.addColorStop(0.5,  `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  glowGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = glowGrad;
   ctx.fillRect(cx - glow, top, glow * 2, bottom - top);
 
