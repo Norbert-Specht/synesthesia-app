@@ -930,10 +930,10 @@ function drawBackground(time) {
   // from the aurora light reflected below. Brighter than before so ribbons
   // read as glowing against a visible night sky (not a black void).
   const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  skyGrad.addColorStop(0.00, `hsl(215, 50%, 6%)`);   // DIAGNOSTIC: darkened zenith
+  skyGrad.addColorStop(0.00, `hsl(${skyHue}, 55%, 11%)`);
   skyGrad.addColorStop(0.60, `hsl(${skyHue}, 42%, 3%)`);   // mid sky — darkest point
   skyGrad.addColorStop(0.75, `hsl(${skyHue}, 40%, 8%)`);   // near horizon — aurora glow
-  skyGrad.addColorStop(1.00, `hsl(215, 50%, 3%)`);          // DIAGNOSTIC: darkened horizon
+  skyGrad.addColorStop(1.00, `hsl(215, 45%, 6%)`);
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -1204,23 +1204,38 @@ function drawRibbonAurora(ribbon, time) {
 // RIBBON SYSTEM — GLOW STICK RENDERER
 //
 // Renders one glow stick: a thin, intensely hot vertical neon line with a
-// wide atmospheric blur radiating outward. Three polygon passes, all
+// wide atmospheric blur that radiates outward. Three polygon passes, all
 // source-over, build up from diffuse haze to a near-white hot core.
 //
-// The key visual character:
-//   - Core is much thinner than aurora ribbons (0.55% of canvas width at 1.0×)
-//   - Outer glow (×18) is proportionally much wider — making the core/glow
-//     contrast strong enough to read as genuine luminosity without blur filters
-//   - glowThickness scales all three passes — dominant sticks are thicker and
-//     brighter than satellites, encoding their musical weight visually
-//   - glowIntensity (driven by chroma energy) scales opacity so quieter pitch
-//     classes appear as fainter neon, not just absent
-//   - Onset flare: beatIntensity drives the core center toward hsl(0,0%,97%)
-//     (pure white) — the stick momentarily becomes a pure hot point of light
+// Why the outer glow is so much wider than the core:
+//   The ×18 outer polygon against a ×1 core polygon creates the extreme
+//   core/halo contrast ratio that makes neon feel luminous. If you look at a
+//   real neon tube in darkness, the glass itself is thin but the glow bleeds
+//   far into the surrounding air. Without CSS blur filters or WebGL, this
+//   contrast ratio is the only way to fake that effect on Canvas 2D.
+//
+// The "chasing glow" effect:
+//   Glow sticks have asymmetric lerp rates — fast rise (0.15), slow fade
+//   (0.022). When a stick fades out, the outer glow (Pass 1 and 2) stays
+//   visible longer than the core, because all three passes are tied to the
+//   same ribbon.opacity but the outer passes have lower absolute alpha values
+//   that take longer to drop below visible threshold. The result: the wide
+//   colored haze "chases" the disappearing core.
+//
+// Onset flare:
+//   beatIntensity drives the core shoulder lightness upward (l → l+22 max).
+//   The centre stop is always pure near-white (hsla 0,0%,97%) — on strong
+//   beats, the shoulder catches up to that brightness and the entire core
+//   briefly appears as a white-hot line before settling back to pitch color.
+//
+// Color source:
+//   Uses the profile hue directly but forces vivid neon s/l values — the
+//   profile values are calibrated for aurora (broad ambient light) and are
+//   too dark for the high-contrast neon aesthetic. Hue is always preserved.
 //
 // Three passes (back to front):
-//   Pass 1 — Wide outer glow  (×18) — vertical gradient, 0.08 max alpha
-//   Pass 2 — Inner glow       (×5)  — horizontal gradient, 0.38–0.58 alpha
+//   Pass 1 — Wide outer glow  (×18) — horizontal gradient, 0.06–0.10 max alpha
+//   Pass 2 — Inner glow       (×5)  — horizontal gradient, 0.32–0.58 alpha
 //   Pass 3 — Hot core         (×1)  — near-white centre, onset-driven flare
 //
 // Parameters:
@@ -1231,17 +1246,26 @@ function drawRibbonAurora(ribbon, time) {
 function drawRibbonGlowstick(ribbon, time) {
   if (ribbon.opacity < 0.005) return;
 
-  const { h, s, l } = ribbon.hsl;
+  // --- Color: profile hue + forced vivid neon s/l ---
+  // Profile hue encodes the chromesthetic pitch identity — never override it.
+  // Saturation and lightness are forced into neon ranges: the profile values
+  // are calibrated for soft aurora light and would produce dim, muddy glow sticks.
+  const { h } = activeProfile.pitchColors[ribbon.pitchClass];
+  const s = 88 + audioData.amplitude * 10;   // always high saturation — neon quality
+  const l = 55 + audioData.amplitude * 12    // mid-high lightness — readable on dark sky
+            + audioData.beatIntensity * 8;    // brief lightness lift on onset
 
-  // --- Build edge arrays (bottom → top) ---
-  // Same dual-sine geometry as aurora, but with a much thinner core.
-  // BASE_CORE scales with glowThickness — dominant sticks are physically wider
-  // than satellites so the visual hierarchy matches the musical hierarchy.
-  const STEPS   = Math.ceil(canvas.height / 6);
+  // --- Build left and right edge arrays (bottom → top) ---
+  // Same dual-sine lateral drift as aurora, but with a much thinner core.
+  // coreHalfWidth × glowThickness means dominant sticks (1.0) are physically
+  // wider than cluster satellites (0.35–0.45), encoding musical weight visually.
+  const STEPS     = Math.ceil(canvas.height / 6);
   const leftEdge  = [];
   const rightEdge = [];
 
-  const originFadeHeight = canvas.height * (0.80 - audioData.amplitude * 0.50);
+  // Glow sticks rise more decisively from the bottom than aurora ribbons —
+  // amplitude shortens the fade height more aggressively (0.48 vs 0.50).
+  const originFadeHeight = canvas.height * (0.72 - audioData.amplitude * 0.48);
 
   for (let i = 0; i <= STEPS; i++) {
     const y        = canvas.height * (1 - i / STEPS);
@@ -1256,220 +1280,112 @@ function drawRibbonGlowstick(ribbon, time) {
                + Math.sin(phase1) * xAmplitude
                + Math.sin(phase2) * xAmplitude * ribbon.wobbleRatio;
 
-    // Minimal thickness noise (±12%) — glow sticks read as precise neon lines,
-    // not the broad organic swells of aurora curtains.
-    const thickNoise = 1 + Math.sin(progress * Math.PI * 4.5
-                       + time * 0.22 + ribbon.timeOffset) * 0.12;
+    // Thickness noise: 6 cycles at ±42% variation — more pronounced pinching
+    // than aurora's 4.5 cycles / ±28%. Creates clearly visible waist points
+    // along the stick that reinforce the "electric filament" quality.
+    const thickNoise      = 1 + Math.sin(progress * Math.PI * 6 + time * 0.35
+                            + ribbon.timeOffset) * 0.42;
+    const coreHalfWidth   = canvas.width * 0.006 * ribbon.glowThickness
+                            * (0.8 + audioData.amplitude * 0.4);
+    const actualHalfWidth = coreHalfWidth * thickNoise;
 
-    // Core width: 0.55% of canvas width at glowThickness 1.0.
-    // Amplitude adds a small pulse — the stick thickens slightly on loud moments.
-    const coreHalfWidth = canvas.width * 0.0055 * ribbon.glowThickness
-                          * thickNoise
-                          * (0.85 + audioData.amplitude * 0.35);
-
+    // Origin fade with surge: on beat, beatIntensity expands the origin upward
+    // so the stick appears to jolt taller momentarily on musical attacks.
     const distFromBottom = canvas.height - y;
     const originOpacity  = Math.min(1, distFromBottom / Math.max(1, originFadeHeight));
+    const surgeOpacity   = originOpacity * (0.7 + audioData.beatIntensity * 0.5);
+    const pointOpacity   = ribbon.opacity * ribbon.glowIntensity * surgeOpacity;
 
-    leftEdge.push({ x: cx - coreHalfWidth, y, pointOpacity: ribbon.opacity * originOpacity, coreHalfWidth });
-    rightEdge.push({ x: cx + coreHalfWidth, y, pointOpacity: ribbon.opacity * originOpacity, coreHalfWidth });
+    leftEdge.push({ x: cx - actualHalfWidth, y, pointOpacity, coreHalfWidth: actualHalfWidth });
+    rightEdge.push({ x: cx + actualHalfWidth, y, pointOpacity, coreHalfWidth: actualHalfWidth });
   }
 
-  const originFadeFrac = Math.min(0.95, originFadeHeight / canvas.height);
-
-  // Midpoint values — anchor horizontal gradients at the ribbon's widest point.
+  // Midpoint values — anchor horizontal gradients at ribbon's mid-height.
   const midIdx  = Math.floor(leftEdge.length / 2);
   const midCx   = (leftEdge[midIdx].x + rightEdge[midIdx].x) / 2;
   const midHalf = leftEdge[midIdx].coreHalfWidth;
 
-  // Onset flare: beatIntensity bleaches the core toward pure white on attacks.
-  // At beatIntensity 0 → pitch-tinted bright. At 1 → near-white hsl(h, ~2%, 97%).
-  const flare  = Math.min(1, audioData.beatIntensity * 1.6);
-  const coreS  = Math.round(s  * (1 - flare * 0.97));       // saturation drains away
-  const coreL  = Math.round(l  + flare * (97 - l));          // lightness surges to 97%
-
-  // Dynamic amplitude pulse — same approach as aurora, keeps the glow sticks
-  // breathing with the music rather than sitting at a fixed opacity.
-  const dynamicOpacity = 0.5 + audioData.amplitude * 0.65;
+  // Onset flare: beatIntensity lifts the shoulder lightness so the core glows
+  // hotter on musical attacks. 0 beatIntensity → shoulder at l+18.
+  // Full beatIntensity → shoulder at l+22 (catches up to the near-white centre).
+  const flareL = l + audioData.beatIntensity * 22;
 
   ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1.0;   // all opacity is baked into gradient stop alphas below
 
   // -----------------------------------------------------------------------
   // PASS 1 — Wide outer glow (the "chasing" blur)
-  // Very wide polygon (×18 core width). Vertical gradient so the haze fades
-  // naturally from the bottom up, matching the origin fade geometry.
-  // Very low center opacity (0.08) — this is atmosphere, not body.
-  // glowIntensity scales the whole pass so fainter pitch classes produce
-  // fainter halos without requiring a separate opacity calculation.
+  // Very wide polygon (×18 core width). Low alpha (0.06–0.10) — this is the
+  // diffuse atmosphere around the stick, not the colored body. The ×18 spread
+  // means the visible haze radius is ~18× the core half-width, which is what
+  // creates the impression of a glowing hot source radiating into dark space.
+  // Opacity baked into the gradient: ribbon.opacity × ribbon.glowIntensity so
+  // fainter pitch classes (satellites, tertiaries) produce proportionally
+  // fainter halos without separate alpha calculations.
   // -----------------------------------------------------------------------
 
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = dynamicOpacity * ribbon.opacity * ribbon.glowIntensity;
-
-  const outerGrad = ctx.createLinearGradient(0, canvas.height, 0, 0);
-  outerGrad.addColorStop(0.0,            `hsla(${h},${s}%,${l}%,0)`);
-  outerGrad.addColorStop(originFadeFrac, `hsla(${h},${s}%,${l}%,0.08)`);
-  outerGrad.addColorStop(1.0,            `hsla(${h},${s}%,${l}%,0.08)`);
-  ctx.fillStyle = outerGrad;
+  const p1Span = midHalf * 18;
+  const p1Grad = ctx.createLinearGradient(midCx - p1Span, 0, midCx + p1Span, 0);
+  p1Grad.addColorStop(0.0, `hsla(${h},${s}%,${l}%,0.00)`);
+  p1Grad.addColorStop(0.3, `hsla(${h},${s}%,${l}%,${(0.06 * ribbon.opacity * ribbon.glowIntensity).toFixed(3)})`);
+  p1Grad.addColorStop(0.5, `hsla(${h},${s}%,${l}%,${(0.10 * ribbon.opacity * ribbon.glowIntensity).toFixed(3)})`);
+  p1Grad.addColorStop(0.7, `hsla(${h},${s}%,${l}%,${(0.06 * ribbon.opacity * ribbon.glowIntensity).toFixed(3)})`);
+  p1Grad.addColorStop(1.0, `hsla(${h},${s}%,${l}%,0.00)`);
+  ctx.fillStyle = p1Grad;
   buildPolygonPath(leftEdge, rightEdge, 18);
   ctx.fill();
 
   // -----------------------------------------------------------------------
   // PASS 2 — Inner intense glow
-  // Moderate polygon (×5 core width). Horizontal gradient — vivid pitch color
-  // concentrated around the core, fading to transparent at the edges.
-  // This is the "neon tube" color body — more opaque than Pass 1 but still
-  // transparent enough for the sky to show through.
+  // Moderate polygon (×5 core width). This is the vivid colored body of the
+  // neon tube — bright enough to clearly read as the pitch color but still
+  // transparent (0.32–0.58) so the sky shows through and overlapping sticks
+  // produce additive color mixing rather than opaque blobs.
+  // l+8 at the centre gives the inner glow a slightly lighter, more saturated
+  // core, transitioning toward the near-white hot centre in Pass 3.
   // -----------------------------------------------------------------------
 
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = dynamicOpacity * ribbon.opacity * ribbon.glowIntensity;
-
-  const innerSpan = midHalf * 5;
-  const innerGrad = ctx.createLinearGradient(midCx - innerSpan, 0, midCx + innerSpan, 0);
-  innerGrad.addColorStop(0.00, `hsla(${h},${s}%,${l}%,0)`);
-  innerGrad.addColorStop(0.30, `hsla(${h},${s}%,${l}%,0.38)`);
-  innerGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.58)`);
-  innerGrad.addColorStop(0.70, `hsla(${h},${s}%,${l}%,0.38)`);
-  innerGrad.addColorStop(1.00, `hsla(${h},${s}%,${l}%,0)`);
-  ctx.fillStyle = innerGrad;
+  const p2Span = midHalf * 5;
+  const p2Grad = ctx.createLinearGradient(midCx - p2Span, 0, midCx + p2Span, 0);
+  p2Grad.addColorStop(0.00, `hsla(${h},${s}%,${l}%,0.00)`);
+  p2Grad.addColorStop(0.25, `hsla(${h},${s}%,${l}%,${(0.32 * ribbon.opacity * ribbon.glowIntensity).toFixed(3)})`);
+  p2Grad.addColorStop(0.50, `hsla(${h},${s}%,${Math.min(99, Math.round(l + 8))}%,${(0.58 * ribbon.opacity * ribbon.glowIntensity).toFixed(3)})`);
+  p2Grad.addColorStop(0.75, `hsla(${h},${s}%,${l}%,${(0.32 * ribbon.opacity * ribbon.glowIntensity).toFixed(3)})`);
+  p2Grad.addColorStop(1.00, `hsla(${h},${s}%,${l}%,0.00)`);
+  ctx.fillStyle = p2Grad;
   buildPolygonPath(leftEdge, rightEdge, 5);
   ctx.fill();
 
   // -----------------------------------------------------------------------
-  // PASS 3 — Hot core (near-white)
-  // Exact core polygon (×1). Horizontal gradient — pitch color at the edges
-  // transitioning to a near-white centre so the spine reads as genuinely hot.
-  // On onset flare, coreS/coreL push the centre toward pure white (0%, 97%).
-  // globalAlpha here is amplitude-driven (0.55–1.0), independent of
-  // dynamicOpacity, so the core can pulse more intensely than the outer glow.
+  // PASS 3 — Hot core
+  // Exact core polygon (×1). Five stops build the temperature gradient:
+  //   Edges (0.0, 1.0): pitch color, slightly desaturated — where the stick
+  //     meets the Pass 2 glow
+  //   Shoulders (0.3, 0.7): lighter and more desaturated — the heated zone.
+  //     flareL drives these toward the centre brightness on onset so the
+  //     whole core briefly appears uniformly white-hot on strong beats.
+  //   Centre (0.5): pure near-white hsla(0,0%,97%) — the hottest point.
+  //     Achromatic so it reads as emitted white light rather than a color.
+  //     This stop is always near-white regardless of pitch class, because
+  //     the hottest part of any neon plasma is always colorless.
   // -----------------------------------------------------------------------
 
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = Math.min(1.0, 0.55 + audioData.amplitude * 0.60);
-
-  const coreSpan = midHalf * 1.0;
-  const coreGrad = ctx.createLinearGradient(midCx - coreSpan, 0, midCx + coreSpan, 0);
-  // Edges: full pitch color at ribbon opacity
-  coreGrad.addColorStop(0.00, `hsla(${h},${s}%,${l}%,${(ribbon.opacity * 0.55).toFixed(3)})`);
-  // Shoulder: transitioning toward the hot centre
-  coreGrad.addColorStop(0.30, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.88).toFixed(3)})`);
-  // Centre: near-white hot point — hue retained so it reads as tinted, not neutral
-  const hotS = Math.round(coreS * 0.25);                  // almost achromatic at flare
-  const hotL = Math.min(97, coreL + 6);                   // just slightly above coreL
-  coreGrad.addColorStop(0.50, `hsla(${h},${hotS}%,${hotL}%,${(ribbon.opacity * 0.97).toFixed(3)})`);
-  coreGrad.addColorStop(0.70, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.88).toFixed(3)})`);
-  coreGrad.addColorStop(1.00, `hsla(${h},${s}%,${l}%,${(ribbon.opacity * 0.55).toFixed(3)})`);
-  ctx.fillStyle = coreGrad;
-  buildPolygonPath(leftEdge, rightEdge, 1.0);
+  const p3Span = midHalf * 1.0;
+  const p3Grad = ctx.createLinearGradient(midCx - p3Span, 0, midCx + p3Span, 0);
+  p3Grad.addColorStop(0.0, `hsla(${h},${Math.round(s - 10)}%,${Math.round(l)}%,${(0.55 * ribbon.opacity).toFixed(3)})`);
+  p3Grad.addColorStop(0.3, `hsla(${h},${Math.round(s - 30)}%,${Math.min(99, Math.round(flareL + 18))}%,${(0.88 * ribbon.opacity).toFixed(3)})`);
+  p3Grad.addColorStop(0.5, `hsla(0,0%,97%,${(0.98 * ribbon.opacity).toFixed(3)})`);
+  p3Grad.addColorStop(0.7, `hsla(${h},${Math.round(s - 30)}%,${Math.min(99, Math.round(flareL + 18))}%,${(0.88 * ribbon.opacity).toFixed(3)})`);
+  p3Grad.addColorStop(1.0, `hsla(${h},${Math.round(s - 10)}%,${Math.round(l)}%,${(0.55 * ribbon.opacity).toFixed(3)})`);
+  ctx.fillStyle = p3Grad;
+  buildPolygonPath(leftEdge, rightEdge, 1);
   ctx.fill();
 
   ctx.globalAlpha = 1.0;
   ctx.restore();
 }
 
-
-// ================================
-// DIAGNOSTIC ONLY — remove after visual confirmation
-//
-// Renders a single hardcoded aurora-green ribbon at canvas center using
-// source-over blending throughout. Bypasses the profile system, ribbon pool,
-// and audioData entirely so we can confirm the rendering pipeline itself can
-// produce reference-quality vivid colors.
-// ================================
-
-function drawDiagnosticRibbon(time) {
-  const STEPS = Math.ceil(canvas.height / 6);
-  const leftEdge  = [];
-  const rightEdge = [];
-
-  for (let i = 0; i <= STEPS; i++) {
-    const y        = canvas.height * (1 - i / STEPS);
-    const progress = i / STEPS;
-
-    const phase1 = progress * Math.PI * 2 * 1.2 + time * 0.15;
-    const phase2 = progress * Math.PI * 2 * 0.7 + time * 0.09;
-
-    const xAmplitude = canvas.width * 0.018;
-    const cx = canvas.width * 0.5
-               + Math.sin(phase1) * xAmplitude
-               + Math.sin(phase2) * xAmplitude * 0.3;
-
-    const thickNoise    = 1 + Math.sin(progress * Math.PI * 4.5 + time * 0.22) * 0.28;
-    const coreHalfWidth = canvas.width * 0.034 * thickNoise;
-
-    const originFadeHeight = canvas.height * 0.55;
-    const distFromBottom   = canvas.height - y;
-    const originOpacity    = Math.min(1, distFromBottom / Math.max(1, originFadeHeight));
-
-    leftEdge.push({
-      x: cx - coreHalfWidth,
-      y,
-      pointOpacity: originOpacity,
-      coreHalfWidth,
-    });
-    rightEdge.push({
-      x: cx + coreHalfWidth,
-      y,
-      pointOpacity: originOpacity,
-      coreHalfWidth,
-    });
-  }
-
-  // Midpoint half-width used to anchor all three horizontal gradients.
-  // coreHalfWidth is scoped inside the loop so we read it back from the array.
-  const midIdx           = Math.floor(leftEdge.length / 2);
-  const coreHalfWidthApprox = leftEdge[midIdx].coreHalfWidth;
-
-  ctx.save();
-
-  // Pass 1 — Wide atmospheric haze
-  // source-over with very low opacity — sky shows through
-  buildPolygonPath(leftEdge, rightEdge, 7);
-  const hazeGrad = ctx.createLinearGradient(
-    canvas.width * 0.5 - coreHalfWidthApprox * 7, 0,
-    canvas.width * 0.5 + coreHalfWidthApprox * 7, 0
-  );
-  hazeGrad.addColorStop(0.0,  'hsla(155, 100%, 58%, 0.00)');
-  hazeGrad.addColorStop(0.35, 'hsla(155, 100%, 58%, 0.07)');
-  hazeGrad.addColorStop(0.5,  'hsla(155, 100%, 62%, 0.11)');
-  hazeGrad.addColorStop(0.65, 'hsla(155, 100%, 58%, 0.07)');
-  hazeGrad.addColorStop(1.0,  'hsla(155, 100%, 58%, 0.00)');
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = hazeGrad;
-  ctx.fill();
-
-  // Pass 2 — Main glow body
-  buildPolygonPath(leftEdge, rightEdge, 3);
-  const glowGrad = ctx.createLinearGradient(
-    canvas.width * 0.5 - coreHalfWidthApprox * 3, 0,
-    canvas.width * 0.5 + coreHalfWidthApprox * 3, 0
-  );
-  glowGrad.addColorStop(0.0,  'hsla(155, 100%, 55%, 0.00)');
-  glowGrad.addColorStop(0.25, 'hsla(155, 100%, 58%, 0.38)');
-  glowGrad.addColorStop(0.5,  'hsla(160, 95%,  62%, 0.55)');
-  glowGrad.addColorStop(0.75, 'hsla(155, 100%, 58%, 0.38)');
-  glowGrad.addColorStop(1.0,  'hsla(155, 100%, 55%, 0.00)');
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = glowGrad;
-  ctx.fill();
-
-  // Pass 3 — Bright core
-  buildPolygonPath(leftEdge, rightEdge, 1);
-  const coreGrad = ctx.createLinearGradient(
-    canvas.width * 0.5 - coreHalfWidthApprox, 0,
-    canvas.width * 0.5 + coreHalfWidthApprox, 0
-  );
-  coreGrad.addColorStop(0.0,  'hsla(155, 90%,  60%, 0.45)');
-  coreGrad.addColorStop(0.35, 'hsla(158, 80%,  72%, 0.82)');
-  coreGrad.addColorStop(0.5,  'hsla(165, 40%,  90%, 0.96)');
-  coreGrad.addColorStop(0.65, 'hsla(158, 80%,  72%, 0.82)');
-  coreGrad.addColorStop(1.0,  'hsla(155, 90%,  60%, 0.45)');
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = coreGrad;
-  ctx.fill();
-
-  ctx.restore();
-}
 
 
 function drawFrame() {
@@ -1508,9 +1424,6 @@ function drawFrame() {
       .sort((a, b) => a.glowThickness - b.glowThickness)   // thinnest drawn first (behind)
       .forEach(s => drawRibbon(s, time));
   }
-
-  // DIAGNOSTIC ONLY — remove after visual confirmation
-  drawDiagnosticRibbon(time);
 
   time += 0.016;
   requestAnimationFrame(drawFrame);
