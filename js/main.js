@@ -157,24 +157,24 @@ function lerp(current, target, factor) {
 function getProfileColor(pitchClass) {
   const base = activeProfile.pitchColors[pitchClass];
 
-  // Amplitude scales saturation: 0.35 at silence, 1.0 at full amplitude.
-  // Prevents ribbons appearing fully vivid when music is quiet.
-  const s = base.s * (0.35 + audioData.amplitude * 0.65);
+  // The profile hue is chromesthetically meaningful — never override it.
+  const h = base.h;
 
-  // spectralBrightness × 100 maps the Meyda centroid range (0.001–0.010)
-  // to a usable 0.1–1.0 brightness value. (brightness - 0.5) centres around
-  // zero, giving ±4 lightness points across the full brightness range.
-  const brightness = Math.min(1.0, audioData.spectralBrightness * 100);
-  const l          = base.l + (brightness - 0.5) * 8;
+  // Force saturation into a range that produces visible glowing light.
+  // Profile base values are too muted for screen-blend luminous rendering;
+  // 78–95% ensures the color is always deeply saturated.
+  const s = 78 + audioData.amplitude * 17;   // 78–95% range, louder = more vivid
 
-  // Beat intensity adds up to +18 lightness — brief bloom on musical onsets.
-  // Clamped at 88 so the color never bleaches to near-white.
-  const lFinal = Math.min(88, l + audioData.beatIntensity * 18);
+  // Force lightness into a mid-high range. Dark colors cannot glow with screen
+  // blending — they need to be bright enough to add visible light to the scene.
+  // Beat intensity adds a +10% flash on musical onsets.
+  const l = 48 + audioData.amplitude * 16    // 48–64% range, louder = brighter
+            + audioData.beatIntensity * 10;   // brief onset bloom
 
   return {
-    h: base.h,
-    s: Math.max(5, Math.min(100, s * 1.4)),   // ×1.4 boost before clamp — richer saturation
-    l: Math.max(25, Math.min(88, lFinal)),     // floor raised 15→25 — prevents muddy grey
+    h,
+    s: Math.min(95, s),
+    l: Math.min(74, l),
   };
 }
 
@@ -509,14 +509,19 @@ function drawBackground(time) {
     const totalOpacity = liveRibbons.reduce((sum, r) => sum + r.opacity, 0);
     const weightedHue  = liveRibbons.reduce((sum, r) => sum + r.hsl.h * r.opacity, 0)
                          / totalOpacity;
-    skyHue = lerp(skyHue, weightedHue, 0.002);
+    // amplitude × 0.04 makes the sky color shift faster during loud passages —
+    // more responsive to musical content than a fixed 0.002 rate.
+    skyHue = lerp(skyHue, weightedHue, audioData.amplitude * 0.04);
   }
 
-  // Sky gradient: near-black at the zenith, slightly warmer toward the horizon.
+  // Sky gradient: dark zenith, near-black mid, subtle warm glow near the horizon
+  // from the aurora light reflected below. Brighter than before so ribbons
+  // read as glowing against a visible night sky (not a black void).
   const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  skyGrad.addColorStop(0.0, `hsl(${skyHue}, 35%, 5%)`);   // zenith — near black with hue tint
-  skyGrad.addColorStop(0.6, `hsl(${skyHue}, 42%, 3%)`);   // mid sky — darkest point
-  skyGrad.addColorStop(1.0, `hsl(220, 50%, 2%)`);          // horizon — cool near-black
+  skyGrad.addColorStop(0.00, `hsl(${skyHue}, 55%, 11%)`);  // zenith — dark but tinted
+  skyGrad.addColorStop(0.60, `hsl(${skyHue}, 42%, 3%)`);   // mid sky — darkest point
+  skyGrad.addColorStop(0.75, `hsl(${skyHue}, 40%, 8%)`);   // near horizon — aurora glow
+  skyGrad.addColorStop(1.00, `hsl(215, 45%, 6%)`);          // horizon — cool near-black
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -670,44 +675,52 @@ function drawRibbon(ribbon, time) {
   const midCx   = (leftEdge[midIdx].x + rightEdge[midIdx].x) / 2;
   const midHalf = leftEdge[midIdx].coreHalfWidth;
 
+  // Global amplitude pulse — makes the aurora visibly swell and dim with the
+  // music. Applied to passes 1 and 2 via globalAlpha; pass 3 uses its own
+  // amplitude formula so the core can pulse independently and more intensely.
+  const dynamicOpacity = 0.45 + audioData.amplitude * 0.75;
+
   ctx.save();
 
   // -----------------------------------------------------------------------
   // PASS 1 — Atmospheric bloom
-  // Very wide polygon (×10 core width). Vertical gradient encodes both the
-  // origin fade and the secondary-pitch atmospheric color at 0.12 max opacity.
-  // 'screen' blend adds a subtle ambient tint to the sky behind the ribbon.
+  // Wide polygon (×6 core width). Vertical gradient encodes both the origin
+  // fade and the secondary-pitch atmospheric color at 0.22 max opacity.
+  // 'screen' blend adds an ambient tint to the sky behind the ribbon.
+  // widthMultiplier reduced from 10→6 to keep the halo close to the ribbon.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = ribbon.opacity;
+  ctx.globalAlpha = dynamicOpacity * ribbon.opacity;
 
   // Vertical gradient: bottom→top. Opacity rises from 0 at the canvas floor
-  // to 0.12 at originFadeFrac, then holds — matching the origin fade geometry.
+  // to 0.22 at originFadeFrac, then holds — matching the origin fade geometry.
   const bloomGrad = ctx.createLinearGradient(0, canvas.height, 0, 0);
   bloomGrad.addColorStop(0.0,            `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-  bloomGrad.addColorStop(originFadeFrac, `hsla(${glowH},${glowS}%,${glowL}%,0.12)`);
-  bloomGrad.addColorStop(1.0,            `hsla(${glowH},${glowS}%,${glowL}%,0.12)`);
+  bloomGrad.addColorStop(originFadeFrac, `hsla(${glowH},${glowS}%,${glowL}%,0.22)`);
+  bloomGrad.addColorStop(1.0,            `hsla(${glowH},${glowS}%,${glowL}%,0.22)`);
   ctx.fillStyle = bloomGrad;
-  buildPolygonPath(leftEdge, rightEdge, 10);
+  buildPolygonPath(leftEdge, rightEdge, 6);
   ctx.fill();
 
   // -----------------------------------------------------------------------
   // PASS 2 — Main ribbon glow
   // Moderate polygon (×3.5 core width). Horizontal gradient from secondary
   // color at the edges blending to primary color at the centre (Option D).
+  // Centre opacity 0.82 (down from 0.85) lets the sky show through slightly,
+  // reading as semi-transparent luminous gas rather than a solid painted shape.
   // 'screen' blend adds the glow luminosity on top of the bloom layer.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = ribbon.opacity;
+  ctx.globalAlpha = dynamicOpacity * ribbon.opacity;
 
   // Gradient span matches the expanded polygon half-width at the midpoint.
   const glowSpan = midHalf * 3.5;
   const glowGrad = ctx.createLinearGradient(midCx - glowSpan, 0, midCx + glowSpan, 0);
   glowGrad.addColorStop(0.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
   glowGrad.addColorStop(0.25, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
-  glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.85)`);
+  glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.82)`);
   glowGrad.addColorStop(0.75, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
   glowGrad.addColorStop(1.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
   ctx.fillStyle = glowGrad;
@@ -720,21 +733,25 @@ function drawRibbon(ribbon, time) {
   // the ribbon's hue with reduced saturation and raised lightness so the spine
   // reads as luminous. 'source-over' preserves the vivid HSL color rather than
   // washing it out with additive blending.
+  //
+  // globalAlpha is driven purely by amplitude here (0.5–1.2, clamped to 1.0)
+  // so the core pulses visibly with musical dynamics independent of the ribbon's
+  // lifecycle opacity. Edges use ribbon.opacity × 0.55 for a soft falloff.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = ribbon.opacity * 0.95;
+  ctx.globalAlpha = Math.min(1.0, 0.5 + audioData.amplitude * 0.7);
 
-  // Near-white: reduce saturation toward pure white, push lightness toward 90.
-  // The hue is retained so it reads as tinted-bright, not neutral-white.
+  // Near-white: reduce saturation, push lightness toward 90. Hue is retained
+  // so it reads as tinted-bright, not neutral-white.
   const coreS = Math.max(s - 15, 5);
   const coreL = Math.min(l + 25, 90);
 
   const coreSpan = midHalf * 1.0;
   const coreGrad = ctx.createLinearGradient(midCx - coreSpan, 0, midCx + coreSpan, 0);
-  coreGrad.addColorStop(0.0, `hsla(${h},${coreS}%,${coreL}%,0)`);
-  coreGrad.addColorStop(0.5, `hsla(${h},${coreS}%,${coreL}%,1)`);
-  coreGrad.addColorStop(1.0, `hsla(${h},${coreS}%,${coreL}%,0)`);
+  coreGrad.addColorStop(0.0, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.55).toFixed(3)})`);
+  coreGrad.addColorStop(0.5, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.98).toFixed(3)})`);
+  coreGrad.addColorStop(1.0, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.55).toFixed(3)})`);
   ctx.fillStyle = coreGrad;
   buildPolygonPath(leftEdge, rightEdge, 1.0);
   ctx.fill();
