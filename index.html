@@ -148,14 +148,10 @@
        when initAudioContext() runs. -->
   <script src="https://cdn.jsdelivr.net/npm/meyda@5.6.1/dist/web/meyda.min.js"></script>
 
-  <!-- Synesthete profile data — pitch class → HSL color mappings.
-       Loaded before main.js so the profile constant is defined when
-       the audio/visual pipeline initializes. -->
-  <script src="profiles/rimsky-korsakov.js"></script>
-
-  <!-- main.js loaded at end of body so the DOM is fully parsed before
-       the script runs. No defer/async needed here. -->
-  <script src="js/main.js"></script>
+  <!-- main.js — ES module entry point. type="module" enables import/export
+       syntax and defers execution until the DOM is parsed (equivalent to
+       defer). The profile data is now imported directly in profiles.js. -->
+  <script type="module" src="js/main.js"></script>
 
 </body>
 </html>

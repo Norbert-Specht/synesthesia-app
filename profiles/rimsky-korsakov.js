@@ -25,7 +25,7 @@
 //   description    = short description shown in profile switcher UI
 // =============================================================================
 
-const RIMSKY_KORSAKOV_PROFILE = {
+export const RIMSKY_KORSAKOV_PROFILE = {
 
   name: 'Rimsky-Korsakov',
 
@@ -102,9 +102,5 @@ const RIMSKY_KORSAKOV_PROFILE = {
 
 };
 
-// Export for use in main.js
 // When the profile system expands (Milestone 4), all profiles will follow
 // this same structure and be loaded dynamically via a profile manager.
-if (typeof module !== 'undefined') {
-  module.exports = RIMSKY_KORSAKOV_PROFILE;
-}
