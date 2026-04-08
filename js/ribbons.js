@@ -15,6 +15,7 @@
 
 import { audioData, lerp } from './audio.js';
 import { getProfileColor } from './profiles.js';
+import { renderMode } from './ui.js';
 
 
 // ================================
@@ -231,14 +232,19 @@ function spawnRibbon(pitchClass, role) {
 
     // Phase offset shifts the sine waves so ribbons drift independently.
     // Without this, all ribbons would sway in unison and look mechanical.
-    timeOffset: Math.random() * Math.PI * 2,
+    // Set to 0 in glow stick mode — straight tubes have no phase to offset.
+    timeOffset: renderMode === 'glowstick' ? 0 : Math.random() * Math.PI * 2,
 
     // Per-ribbon shape parameters — randomized at spawn so no two ribbons
-    // ever move or curve the same way. Read by drawRibbon() each frame.
-    waveFreq1:   0.8 + Math.random() * 0.8,    // primary sine spatial frequency;  range 0.8–1.6
-    waveFreq2:   0.5 + Math.random() * 0.9,    // secondary sine spatial frequency; range 0.5–1.4
-    driftSpeed:  0.12 + Math.random() * 0.14,  // time-based lateral drift rate;    range 0.12–0.26
-    wobbleRatio: 0.25 + Math.random() * 0.30,  // secondary wave amplitude fraction; range 0.25–0.55
+    // ever move or curve the same way. Read by drawRibbonAurora() each frame.
+    // Not set in glow stick mode: straight tubes don't drift or curve, and
+    // leaving these undefined prevents renderer code from silently using them.
+    ...(renderMode !== 'glowstick' && {
+      waveFreq1:   0.8 + Math.random() * 0.8,    // primary sine spatial frequency;  range 0.8–1.6
+      waveFreq2:   0.5 + Math.random() * 0.9,    // secondary sine spatial frequency; range 0.5–1.4
+      driftSpeed:  0.12 + Math.random() * 0.14,  // time-based lateral drift rate;    range 0.12–0.26
+      wobbleRatio: 0.25 + Math.random() * 0.30,  // secondary wave amplitude fraction; range 0.25–0.55
+    }),
 
     spawnTime:  performance.now(),
 
