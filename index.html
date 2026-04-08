@@ -121,6 +121,22 @@
     </div>
   </div>
 
+  <!-- =====================================================================
+       RENDER MODE SWITCH
+       Permanent UI feature — always visible, top right corner.
+       Two modes: Aurora (wide ribbon curtains) and Glow (neon glow sticks).
+       Both share the same audio analysis and ribbon lifecycle system.
+       Active state managed by CSS .active class; routing handled in main.js.
+       ===================================================================== -->
+  <div id="mode-switch">
+    <button id="mode-aurora" class="mode-btn active" aria-label="Aurora mode">
+      Aurora
+    </button>
+    <button id="mode-glow" class="mode-btn" aria-label="Glow mode">
+      Glow
+    </button>
+  </div>
+
   <!-- Hidden <audio> element — the media source for the Web Audio API.
        No controls attribute: playback is managed entirely by main.js.
        The AudioContext taps this element via createMediaElementSource(). -->

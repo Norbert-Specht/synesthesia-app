@@ -22,7 +22,8 @@
 //     → updateRibbonLifecycle()     (spawn / demote / fade ribbons)
 //     → updateRibbonOpacities()     (animate opacity transitions, refresh colors)
 //     → drawBackground()            (sky gradient + stars)
-//     → drawRibbon() × N            (each ribbon in the pool, back-to-front)
+//     → drawRibbon() × N            (router: aurora → drawRibbonAurora()
+//                                           glowstick → drawRibbonGlowstick())
 // =============================================================================
 
 
@@ -56,6 +57,49 @@ window.addEventListener('resize', resizeCanvas);
 // ================================
 
 let activeProfile = RIMSKY_KORSAKOV_PROFILE;
+
+
+// ================================
+// RENDER MODE
+//
+// Controls which draw function is used for each ribbon each frame.
+// Two modes exist as permanent user-facing features (switched via the pill UI
+// in the top right corner — see index.html #mode-switch, style.css section 7):
+//
+//   'aurora'    — broad translucent ribbon curtains. drawRibbonAurora().
+//                 Three polygon passes: wide haze, main glow body, bright core.
+//                 source-over compositing. Sky visible between ribbons.
+//
+//   'glowstick' — thin neon sticks with a wide chasing blur. drawRibbonGlowstick().
+//                 Three polygon passes: wide outer glow, inner intense glow, hot core.
+//                 Asymmetric appear/fade timing — fast in, slow out.
+//
+// Both modes share the same audio analysis pipeline, ribbon lifecycle system,
+// profile color lookup, and origin fade geometry. Only the draw function differs.
+//
+// To add a future mode: add a new value here, add a new drawRibbon<Name>() function,
+// add a branch in drawRibbon(), and add a button to #mode-switch in index.html.
+// ================================
+
+// 'aurora' | 'glowstick' — read each frame by drawRibbon() to route to the
+// correct rendering function. Default is aurora on page load.
+let renderMode = 'aurora';
+
+// Mode switch button event listeners.
+// Clicking a button updates renderMode and swaps the .active class between
+// the two buttons. The .active class provides the visual selected state
+// (cyan tinted fill) — see style.css section 7 for the styling.
+document.getElementById('mode-aurora').addEventListener('click', () => {
+  renderMode = 'aurora';
+  document.getElementById('mode-aurora').classList.add('active');
+  document.getElementById('mode-glow').classList.remove('active');
+});
+
+document.getElementById('mode-glow').addEventListener('click', () => {
+  renderMode = 'glowstick';
+  document.getElementById('mode-glow').classList.add('active');
+  document.getElementById('mode-aurora').classList.remove('active');
+});
 
 
 // ================================
@@ -518,10 +562,10 @@ function drawBackground(time) {
   // from the aurora light reflected below. Brighter than before so ribbons
   // read as glowing against a visible night sky (not a black void).
   const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  skyGrad.addColorStop(0.00, `hsl(${skyHue}, 55%, 11%)`);  // zenith — dark but tinted
+  skyGrad.addColorStop(0.00, `hsl(215, 50%, 6%)`);   // DIAGNOSTIC: darkened zenith
   skyGrad.addColorStop(0.60, `hsl(${skyHue}, 42%, 3%)`);   // mid sky — darkest point
   skyGrad.addColorStop(0.75, `hsl(${skyHue}, 40%, 8%)`);   // near horizon — aurora glow
-  skyGrad.addColorStop(1.00, `hsl(215, 45%, 6%)`);          // horizon — cool near-black
+  skyGrad.addColorStop(1.00, `hsl(215, 50%, 3%)`);          // DIAGNOSTIC: darkened horizon
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -574,7 +618,34 @@ function buildPolygonPath(leftEdge, rightEdge, widthMultiplier) {
 
 
 // ================================
-// RIBBON SYSTEM — DRAW RIBBON
+// RIBBON SYSTEM — RENDER MODE ROUTER
+//
+// drawRibbon() is the single entry point called by drawFrame() for each ribbon.
+// It routes to the correct mode-specific implementation based on renderMode,
+// keeping the frame loop clean and mode-agnostic.
+//
+// To add a new render mode:
+//   1. Add a new value for renderMode (e.g. 'plasma')
+//   2. Write a drawRibbonPlasma(ribbon, time) function below
+//   3. Add an else-if branch here
+//   4. Add a button to #mode-switch in index.html
+//
+// Parameters:
+//   ribbon — a ribbon object from the ribbons pool
+//   time   — the shared animation time counter
+// ================================
+
+function drawRibbon(ribbon, time) {
+  if (renderMode === 'aurora') {
+    drawRibbonAurora(ribbon, time);
+  } else {
+    drawRibbonGlowstick(ribbon, time);
+  }
+}
+
+
+// ================================
+// RIBBON SYSTEM — AURORA RENDERER
 //
 // Renders one ribbon using polygon-based geometry: three filled polygon passes
 // replace the previous ~250-slice fillRect loop. This reduces gradient object
@@ -582,7 +653,7 @@ function buildPolygonPath(leftEdge, rightEdge, widthMultiplier) {
 // the GC pressure and frame-time degradation that appeared after ~20 seconds.
 //
 // Three passes (back to front):
-//   1. Atmospheric bloom   — widthMultiplier 10,  vertical gradient,    screen blend
+//   1. Atmospheric bloom   — widthMultiplier 6,   vertical gradient,    screen blend
 //   2. Main ribbon glow    — widthMultiplier 3.5, horizontal gradient,  screen blend
 //   3. Bright solid core   — widthMultiplier 1.0, horizontal gradient,  source-over
 //
@@ -594,7 +665,7 @@ function buildPolygonPath(leftEdge, rightEdge, widthMultiplier) {
 //   time   — the shared animation time counter
 // ================================
 
-function drawRibbon(ribbon, time) {
+function drawRibbonAurora(ribbon, time) {
   if (ribbon.opacity < 0.005) return;
 
   const { h, s, l } = ribbon.hsl;
@@ -761,6 +832,133 @@ function drawRibbon(ribbon, time) {
 }
 
 
+// ================================
+// RIBBON SYSTEM — GLOW STICK RENDERER (STUB)
+//
+// Renders one ribbon in Glow Stick mode — thin, intensely hot neon lines
+// with a wide chasing blur. Implemented in the next prompt.
+//
+// Design spec (for implementation):
+//   Pass 1 — Wide outer glow:  buildPolygonPath(edges, 18), opacity 0.06–0.10
+//   Pass 2 — Inner glow:       buildPolygonPath(edges, 5),  opacity 0.32–0.58
+//   Pass 3 — Hot core:         buildPolygonPath(edges, 1),  near-white centre
+//   Timing: appear lerp 0.15 (fast/snappy), fade lerp 0.022 (slow linger)
+//   Onset flare: beatIntensity > 0.5 → core surges toward pure white
+//
+// Parameters:
+//   ribbon — a ribbon object from the ribbons pool
+//   time   — the shared animation time counter
+// ================================
+
+function drawRibbonGlowstick(ribbon, time) {
+  // Glow stick rendering — implemented in next prompt
+}
+
+
+// ================================
+// DIAGNOSTIC ONLY — remove after visual confirmation
+//
+// Renders a single hardcoded aurora-green ribbon at canvas center using
+// source-over blending throughout. Bypasses the profile system, ribbon pool,
+// and audioData entirely so we can confirm the rendering pipeline itself can
+// produce reference-quality vivid colors.
+// ================================
+
+function drawDiagnosticRibbon(time) {
+  const STEPS = Math.ceil(canvas.height / 6);
+  const leftEdge  = [];
+  const rightEdge = [];
+
+  for (let i = 0; i <= STEPS; i++) {
+    const y        = canvas.height * (1 - i / STEPS);
+    const progress = i / STEPS;
+
+    const phase1 = progress * Math.PI * 2 * 1.2 + time * 0.15;
+    const phase2 = progress * Math.PI * 2 * 0.7 + time * 0.09;
+
+    const xAmplitude = canvas.width * 0.018;
+    const cx = canvas.width * 0.5
+               + Math.sin(phase1) * xAmplitude
+               + Math.sin(phase2) * xAmplitude * 0.3;
+
+    const thickNoise    = 1 + Math.sin(progress * Math.PI * 4.5 + time * 0.22) * 0.28;
+    const coreHalfWidth = canvas.width * 0.034 * thickNoise;
+
+    const originFadeHeight = canvas.height * 0.55;
+    const distFromBottom   = canvas.height - y;
+    const originOpacity    = Math.min(1, distFromBottom / Math.max(1, originFadeHeight));
+
+    leftEdge.push({
+      x: cx - coreHalfWidth,
+      y,
+      pointOpacity: originOpacity,
+      coreHalfWidth,
+    });
+    rightEdge.push({
+      x: cx + coreHalfWidth,
+      y,
+      pointOpacity: originOpacity,
+      coreHalfWidth,
+    });
+  }
+
+  // Midpoint half-width used to anchor all three horizontal gradients.
+  // coreHalfWidth is scoped inside the loop so we read it back from the array.
+  const midIdx           = Math.floor(leftEdge.length / 2);
+  const coreHalfWidthApprox = leftEdge[midIdx].coreHalfWidth;
+
+  ctx.save();
+
+  // Pass 1 — Wide atmospheric haze
+  // source-over with very low opacity — sky shows through
+  buildPolygonPath(leftEdge, rightEdge, 7);
+  const hazeGrad = ctx.createLinearGradient(
+    canvas.width * 0.5 - coreHalfWidthApprox * 7, 0,
+    canvas.width * 0.5 + coreHalfWidthApprox * 7, 0
+  );
+  hazeGrad.addColorStop(0.0,  'hsla(155, 100%, 58%, 0.00)');
+  hazeGrad.addColorStop(0.35, 'hsla(155, 100%, 58%, 0.07)');
+  hazeGrad.addColorStop(0.5,  'hsla(155, 100%, 62%, 0.11)');
+  hazeGrad.addColorStop(0.65, 'hsla(155, 100%, 58%, 0.07)');
+  hazeGrad.addColorStop(1.0,  'hsla(155, 100%, 58%, 0.00)');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = hazeGrad;
+  ctx.fill();
+
+  // Pass 2 — Main glow body
+  buildPolygonPath(leftEdge, rightEdge, 3);
+  const glowGrad = ctx.createLinearGradient(
+    canvas.width * 0.5 - coreHalfWidthApprox * 3, 0,
+    canvas.width * 0.5 + coreHalfWidthApprox * 3, 0
+  );
+  glowGrad.addColorStop(0.0,  'hsla(155, 100%, 55%, 0.00)');
+  glowGrad.addColorStop(0.25, 'hsla(155, 100%, 58%, 0.38)');
+  glowGrad.addColorStop(0.5,  'hsla(160, 95%,  62%, 0.55)');
+  glowGrad.addColorStop(0.75, 'hsla(155, 100%, 58%, 0.38)');
+  glowGrad.addColorStop(1.0,  'hsla(155, 100%, 55%, 0.00)');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = glowGrad;
+  ctx.fill();
+
+  // Pass 3 — Bright core
+  buildPolygonPath(leftEdge, rightEdge, 1);
+  const coreGrad = ctx.createLinearGradient(
+    canvas.width * 0.5 - coreHalfWidthApprox, 0,
+    canvas.width * 0.5 + coreHalfWidthApprox, 0
+  );
+  coreGrad.addColorStop(0.0,  'hsla(155, 90%,  60%, 0.45)');
+  coreGrad.addColorStop(0.35, 'hsla(158, 80%,  72%, 0.82)');
+  coreGrad.addColorStop(0.5,  'hsla(165, 40%,  90%, 0.96)');
+  coreGrad.addColorStop(0.65, 'hsla(158, 80%,  72%, 0.82)');
+  coreGrad.addColorStop(1.0,  'hsla(155, 90%,  60%, 0.45)');
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = coreGrad;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+
 function drawFrame() {
   // Step 1: Read from Web Audio API / Meyda → writes into audioData.
   updateAudioData();
@@ -780,6 +978,9 @@ function drawFrame() {
   [...ribbons]
     .sort((a, b) => (a.role === 'primary' ? 1 : -1))
     .forEach(r => drawRibbon(r, time));
+
+  // DIAGNOSTIC ONLY — remove after visual confirmation
+  drawDiagnosticRibbon(time);
 
   time += 0.016;
   requestAnimationFrame(drawFrame);

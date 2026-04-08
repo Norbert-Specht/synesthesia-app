@@ -8,6 +8,7 @@
      4. Landing overlay
      5. Controls bar
      6. Progress bar & time display
+     7. Render mode switch
    ============================================================================= */
 
 
@@ -393,4 +394,68 @@ html, body {
      a long track name — the track name truncates with ellipsis instead */
   flex-shrink: 0;
   letter-spacing: 0.02em;
+}
+
+
+/* ================================
+   7. RENDER MODE SWITCH
+   ================================
+   Pill-shaped segmented control, fixed in the top right corner.
+   Always visible and active — this is a permanent user-facing feature,
+   not a developer tool. z-index: 30 sits above the controls bar (20)
+   and the landing overlay (10).
+
+   The pill container uses a dark frosted-glass treatment matching the
+   controls bar aesthetic. Buttons inside are borderless; the .active
+   class adds a cyan-tinted fill to signal the current mode.
+   ================================ */
+
+#mode-switch {
+  position: fixed;
+  top: 24px;
+  right: 28px;
+  z-index: 30;
+
+  /* Pill-shaped frosted container — matches the controls bar glass treatment */
+  display: flex;
+  gap: 0;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(6, 8, 16, 0.62);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);   /* Safari prefix required */
+  /* Hairline border at same opacity as controls bar top border */
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Individual mode buttons — borderless inside the pill container */
+.mode-btn {
+  font-family: var(--font);
+  font-size: 0.78rem;
+  font-weight: 400;
+  padding: 6px 18px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  /* Smooth transition for the active/inactive state change */
+  transition: all 0.25s ease;
+
+  /* Inactive state: transparent background, muted secondary text */
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+/* Hover on inactive button — brightens text to signal interactivity
+   without showing the full active treatment prematurely */
+.mode-btn:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+/* Active state — cyan-tinted fill and accent text colour.
+   box-shadow adds a soft outer glow matching the aurora accent palette.
+   0.15 opacity fill is subtle — enough to read as selected, not garish. */
+.mode-btn.active {
+  background: rgba(0, 229, 255, 0.15);
+  color: var(--accent);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.18);
 }
