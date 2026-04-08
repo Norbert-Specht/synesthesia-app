@@ -173,8 +173,8 @@ function getProfileColor(pitchClass) {
 
   return {
     h: base.h,
-    s: Math.max(5,  Math.min(100, s)),      // floor at 5 — never fully grey
-    l: Math.max(15, Math.min(88,  lFinal)), // floor at 15 — always visible on dark bg
+    s: Math.max(5, Math.min(100, s * 1.4)),   // ×1.4 boost before clamp — richer saturation
+    l: Math.max(25, Math.min(88, lFinal)),     // floor raised 15→25 — prevents muddy grey
   };
 }
 
@@ -275,7 +275,7 @@ function spawnRibbon(pitchClass, role) {
 
     // Per-ribbon shape parameters — randomized at spawn so no two ribbons
     // ever move or curve the same way. Read by drawRibbon() each frame.
-    waveFreq1:   1.2 + Math.random() * 1.6,    // primary sine spatial frequency;  range 1.2–2.8
+    waveFreq1:   0.8 + Math.random() * 0.8,    // primary sine spatial frequency;  range 0.8–1.6
     waveFreq2:   0.5 + Math.random() * 0.9,    // secondary sine spatial frequency; range 0.5–1.4
     driftSpeed:  0.12 + Math.random() * 0.14,  // time-based lateral drift rate;    range 0.12–0.26
     wobbleRatio: 0.25 + Math.random() * 0.30,  // secondary wave amplitude fraction; range 0.25–0.55
@@ -514,9 +514,9 @@ function drawBackground(time) {
 
   // Sky gradient: near-black at the zenith, slightly warmer toward the horizon.
   const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  skyGrad.addColorStop(0.0, `hsl(${skyHue}, 18%, 4%)`);   // zenith — near black
-  skyGrad.addColorStop(0.6, `hsl(${skyHue}, 22%, 7%)`);   // mid sky
-  skyGrad.addColorStop(1.0, `hsl(${skyHue}, 28%, 10%)`);  // horizon — slightly lighter
+  skyGrad.addColorStop(0.0, `hsl(${skyHue}, 35%, 5%)`);   // zenith — near black with hue tint
+  skyGrad.addColorStop(0.6, `hsl(${skyHue}, 42%, 3%)`);   // mid sky — darkest point
+  skyGrad.addColorStop(1.0, `hsl(220, 50%, 2%)`);          // horizon — cool near-black
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -526,21 +526,63 @@ function drawBackground(time) {
 
 
 // ================================
+// RIBBON SYSTEM — POLYGON PATH BUILDER
+//
+// Constructs a closed polygon path from two edge arrays, expanding each edge
+// outward from the ribbon's centerline by widthMultiplier. Called by
+// drawRibbon() once per render pass — same geometry, different scale.
+//
+// Parameters:
+//   leftEdge        — array of {x, y} points; left core boundary, bottom→top
+//   rightEdge       — array of {x, y} points; right core boundary, bottom→top
+//   widthMultiplier — expansion factor beyond core half-width:
+//                       10   = atmospheric bloom (wide diffuse halo)
+//                       3.5  = main glow
+//                       1.0  = bright solid core (exact polygon)
+// ================================
+
+function buildPolygonPath(leftEdge, rightEdge, widthMultiplier) {
+  ctx.beginPath();
+
+  // Trace left edge upward (index 0 = bottom, last index = top).
+  // Each expanded point reflects outward from the centerline by the multiplier.
+  for (let i = 0; i < leftEdge.length; i++) {
+    const lx     = leftEdge[i].x;
+    const rx     = rightEdge[i].x;
+    const center = (lx + rx) / 2;
+    const ax     = center - (center - lx) * widthMultiplier;
+    if (i === 0) ctx.moveTo(ax, leftEdge[i].y);
+    else         ctx.lineTo(ax, leftEdge[i].y);
+  }
+
+  // Trace right edge back downward to close the polygon outline.
+  for (let i = rightEdge.length - 1; i >= 0; i--) {
+    const lx     = leftEdge[i].x;
+    const rx     = rightEdge[i].x;
+    const center = (lx + rx) / 2;
+    const ax     = center + (rx - center) * widthMultiplier;
+    ctx.lineTo(ax, rightEdge[i].y);
+  }
+
+  ctx.closePath();
+}
+
+
+// ================================
 // RIBBON SYSTEM — DRAW RIBBON
 //
-// Renders one ribbon from bottom to top in two passes (outer glow + bright core),
-// both using 'screen' blend mode so ribbons add light rather than occlude.
+// Renders one ribbon using polygon-based geometry: three filled polygon passes
+// replace the previous ~250-slice fillRect loop. This reduces gradient object
+// creation from O(canvas.height / 4) to O(1) per ribbon per frame — fixing
+// the GC pressure and frame-time degradation that appeared after ~20 seconds.
 //
-// Vertical geometry: the ribbon is a series of horizontal slices stacked from
-// canvas bottom to top. Each slice has its own x (dual-sine lateral drift),
-// thickness (sine noise × amplitude), and opacity (origin fade).
+// Three passes (back to front):
+//   1. Atmospheric bloom   — widthMultiplier 10,  vertical gradient,    screen blend
+//   2. Main ribbon glow    — widthMultiplier 3.5, horizontal gradient,  screen blend
+//   3. Bright solid core   — widthMultiplier 1.0, horizontal gradient,  source-over
 //
-// Origin fade: how far the ribbon "rises" from the bottom is driven by
-// audioData.amplitude. Loud → nearly full height. Quiet → top portion only.
-//
-// Option D glow: the outer glow gradient blends at its edges toward the
-// complementary ribbon's hue (secondary → primary's color, and vice versa),
-// creating harmonic color mixing at the visual boundary of each ribbon.
+// Pass 3 uses source-over (not screen) so the vivid HSL core color renders
+// fully opaque rather than being washed out by additive blending.
 //
 // Parameters:
 //   ribbon — a ribbon object from the ribbons pool
@@ -552,48 +594,53 @@ function drawRibbon(ribbon, time) {
 
   const { h, s, l } = ribbon.hsl;
 
-  // Origin fade height: the vertical extent of the transparent-to-opaque
-  // gradient at the bottom of the ribbon.
-  //   amplitude 0 → fade spans 82% of canvas height (only top 18% visible)
-  //   amplitude 1 → fade spans 30% of canvas height (ribbon nearly full height)
-  const originFadeHeight = canvas.height * (0.82 - audioData.amplitude * 0.52);
+  // --- Build left and right edge arrays (bottom → top) ---
+  // One point every 6 canvas pixels — sufficient resolution for smooth polygon
+  // curvature; half the step count of the old fillRect approach.
+  const STEPS = Math.ceil(canvas.height / 6);
+  const leftEdge  = [];
+  const rightEdge = [];
 
-  // --- Build vertical centerline point array (bottom → top) ---
-  // One point every 4 canvas pixels — enough resolution for smooth curvature.
-  const STEPS = Math.ceil(canvas.height / 4);
-  const pts   = [];
+  // originFadeHeight: the vertical span of the transparent-to-opaque fade
+  // at the base of the ribbon.
+  //   amplitude 0 → fade spans 80% of canvas height (ribbon barely rises)
+  //   amplitude 1 → fade spans 30% of canvas height (ribbon nearly full height)
+  const originFadeHeight = canvas.height * (0.80 - audioData.amplitude * 0.50);
 
   for (let i = 0; i <= STEPS; i++) {
+    const y        = canvas.height * (1 - i / STEPS);  // y=canvas.height at i=0 (bottom)
     const progress = i / STEPS;
-    const y        = canvas.height - progress * canvas.height;
 
-    // Dual-frequency lateral drift using per-ribbon shape parameters stored
-    // at spawn time. waveFreq1/2 control spatial curvature frequency;
-    // driftSpeed controls how fast the ribbon sways over time; wobbleRatio
-    // scales the secondary wave's amplitude relative to the primary.
-    // These values differ for every ribbon — no two ever move the same way.
-    const phase1 = progress * Math.PI * 2 * ribbon.waveFreq1 + time * ribbon.driftSpeed       + ribbon.timeOffset;
-    const phase2 = progress * Math.PI * 2 * ribbon.waveFreq2 + time * ribbon.driftSpeed * 0.61 + ribbon.timeOffset * 0.7;
-    const xAmp   = canvas.width * 0.055;
-    const x      = ribbon.xFraction * canvas.width
-                   + Math.sin(phase1) * xAmp
-                   + Math.sin(phase2) * xAmp * ribbon.wobbleRatio;
+    // Dual-frequency lateral drift. xAmplitude at 1.8% of canvas width keeps
+    // ribbons reading as near-vertical curtains rather than diagonal sine strands.
+    const phase1 = progress * Math.PI * 2 * ribbon.waveFreq1
+                   + time * ribbon.driftSpeed + ribbon.timeOffset;
+    const phase2 = progress * Math.PI * 2 * ribbon.waveFreq2
+                   + time * ribbon.driftSpeed * 0.6 + ribbon.timeOffset * 0.7;
+    const xAmplitude = canvas.width * 0.018;
+    const cx = ribbon.xFraction * canvas.width
+               + Math.sin(phase1) * xAmplitude
+               + Math.sin(phase2) * xAmplitude * ribbon.wobbleRatio;
 
-    // Thickness noise: 5 sine cycles along the height create natural pinch
-    // points and swells. ±32% variation keeps it subtle but visible.
-    const thickNoise = 1 + Math.sin(progress * Math.PI * 5 + time * 0.25) * 0.32;
-    // Raised from 0.018 → 0.055: broad aurora curtain width instead of a strand.
-    const baseThick  = canvas.width * 0.055 * ribbon.thickness;
-    // Amplitude modulates thickness: quiet = thinner, loud = wider.
-    // 0.6 floor keeps the ribbon visible at silence; ×0.8 gives +40% at peak.
-    const thick = baseThick * thickNoise * (0.6 + audioData.amplitude * 0.8);
+    // Thickness noise: 4.5 sine cycles along the height create organic pinch
+    // points and swells in the ribbon's width. ±28% variation.
+    const thickNoise = 1 + Math.sin(progress * Math.PI * 4.5
+                       + time * 0.22 + ribbon.timeOffset) * 0.28;
 
-    // Origin fade: transparent at the bottom, opaque at originFadeHeight above it.
+    // coreHalfWidth: half the total core polygon width at this point.
+    // Scales with per-ribbon thickness multiplier and live amplitude.
+    const coreHalfWidth = canvas.width * 0.032 * thickNoise
+                          * ribbon.thickness
+                          * (0.7 + audioData.amplitude * 0.6);
+
+    // Origin fade: transparent at the canvas bottom, reaching full opacity
+    // at originFadeHeight above it.
     const distFromBottom = canvas.height - y;
-    const originOpacity  = Math.min(1.0, distFromBottom / originFadeHeight);
+    const originOpacity  = Math.min(1, distFromBottom / Math.max(1, originFadeHeight));
     const pointOpacity   = ribbon.opacity * originOpacity;
 
-    pts.push({ x, y, thick, pointOpacity });
+    leftEdge.push({ x: cx - coreHalfWidth, y, pointOpacity, coreHalfWidth });
+    rightEdge.push({ x: cx + coreHalfWidth, y, pointOpacity, coreHalfWidth });
   }
 
   // --- Option D: glow edge color from the complementary ribbon ---
@@ -613,57 +660,84 @@ function drawRibbon(ribbon, time) {
     if (pri) { glowH = pri.hsl.h; glowS = pri.hsl.s; glowL = pri.hsl.l; }
   }
 
+  // originFadeFrac: gradient stop position where the origin fade reaches full
+  // opacity (expressed as 0.0 = canvas bottom, 1.0 = canvas top).
+  const originFadeFrac = Math.min(0.95, originFadeHeight / canvas.height);
+
+  // Ribbon midpoint values — used to anchor horizontal gradients.
+  // Horizontal gradients are straight bands; the polygon clip defines the shape.
+  const midIdx  = Math.floor(leftEdge.length / 2);
+  const midCx   = (leftEdge[midIdx].x + rightEdge[midIdx].x) / 2;
+  const midHalf = leftEdge[midIdx].coreHalfWidth;
+
   ctx.save();
-  // 'screen' blend: ribbons add their light to everything behind them.
-  // Overlapping colors mix as light (additive), producing luminous blends.
+
+  // -----------------------------------------------------------------------
+  // PASS 1 — Atmospheric bloom
+  // Very wide polygon (×10 core width). Vertical gradient encodes both the
+  // origin fade and the secondary-pitch atmospheric color at 0.12 max opacity.
+  // 'screen' blend adds a subtle ambient tint to the sky behind the ribbon.
+  // -----------------------------------------------------------------------
+
   ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = ribbon.opacity;
 
-  // Draw each point as a horizontal fillRect.
-  // globalAlpha encodes the per-point origin fade so transparency tracks the
-  // ribbon's rise from the bottom of the canvas.
-  // Horizontal gradients are re-anchored to each point's actual x so they
-  // track the ribbon's lateral drift correctly.
-  for (let i = 0; i < pts.length; i++) {
-    const pt = pts[i];
-    if (pt.pointOpacity < 0.005) continue;
+  // Vertical gradient: bottom→top. Opacity rises from 0 at the canvas floor
+  // to 0.12 at originFadeFrac, then holds — matching the origin fade geometry.
+  const bloomGrad = ctx.createLinearGradient(0, canvas.height, 0, 0);
+  bloomGrad.addColorStop(0.0,            `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+  bloomGrad.addColorStop(originFadeFrac, `hsla(${glowH},${glowS}%,${glowL}%,0.12)`);
+  bloomGrad.addColorStop(1.0,            `hsla(${glowH},${glowS}%,${glowL}%,0.12)`);
+  ctx.fillStyle = bloomGrad;
+  buildPolygonPath(leftEdge, rightEdge, 10);
+  ctx.fill();
 
-    ctx.globalAlpha = pt.pointOpacity;
+  // -----------------------------------------------------------------------
+  // PASS 2 — Main ribbon glow
+  // Moderate polygon (×3.5 core width). Horizontal gradient from secondary
+  // color at the edges blending to primary color at the centre (Option D).
+  // 'screen' blend adds the glow luminosity on top of the bloom layer.
+  // -----------------------------------------------------------------------
 
-    // Pass 1: atmospheric bloom — diffuse secondary-pitch halo that bleeds far
-    // beyond the ribbon body. radius = thick × 18, capped alpha 0.12 so it
-    // reads as a wide tint rather than a hard edge. Drawn first (behind all
-    // other passes) so the tighter glow and core render on top.
-    const bloomRadius = pt.thick * 18;
-    const bloomGrad   = ctx.createLinearGradient(pt.x - bloomRadius, 0, pt.x + bloomRadius, 0);
-    bloomGrad.addColorStop(0.0, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-    bloomGrad.addColorStop(0.5, `hsla(${glowH},${glowS}%,${glowL}%,0.12)`);
-    bloomGrad.addColorStop(1.0, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-    ctx.fillStyle = bloomGrad;
-    ctx.fillRect(pt.x - bloomRadius, pt.y - 2, bloomRadius * 2, 4);
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = ribbon.opacity;
 
-    // Pass 2: main glow — broad halo, secondary color at edges blending to
-    // primary color at centre (Option D). radius = thick × 8 so the
-    // atmospheric gradient fills a wide band around the ribbon core.
-    const glowRadius = pt.thick * 8;
-    const glowGrad   = ctx.createLinearGradient(pt.x - glowRadius, 0, pt.x + glowRadius, 0);
-    glowGrad.addColorStop(0.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-    glowGrad.addColorStop(0.25, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
-    glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.85)`);
-    glowGrad.addColorStop(0.75, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
-    glowGrad.addColorStop(1.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-    ctx.fillStyle = glowGrad;
-    ctx.fillRect(pt.x - glowRadius, pt.y - 2, glowRadius * 2, 4);
+  // Gradient span matches the expanded polygon half-width at the midpoint.
+  const glowSpan = midHalf * 3.5;
+  const glowGrad = ctx.createLinearGradient(midCx - glowSpan, 0, midCx + glowSpan, 0);
+  glowGrad.addColorStop(0.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+  glowGrad.addColorStop(0.25, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
+  glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.85)`);
+  glowGrad.addColorStop(0.75, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
+  glowGrad.addColorStop(1.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+  ctx.fillStyle = glowGrad;
+  buildPolygonPath(leftEdge, rightEdge, 3.5);
+  ctx.fill();
 
-    // Pass 3: bright core — narrow white gradient; the luminous spine.
-    // 18% of the ribbon thickness gives a tight, glowing centre line.
-    const coreThick = pt.thick * 0.18;
-    const coreGrad  = ctx.createLinearGradient(pt.x - coreThick, 0, pt.x + coreThick, 0);
-    coreGrad.addColorStop(0.0, 'rgba(255,255,255,0)');
-    coreGrad.addColorStop(0.5, 'rgba(255,255,255,0.55)');
-    coreGrad.addColorStop(1.0, 'rgba(255,255,255,0)');
-    ctx.fillStyle = coreGrad;
-    ctx.fillRect(pt.x - coreThick, pt.y - 1, coreThick * 2, 2);
-  }
+  // -----------------------------------------------------------------------
+  // PASS 3 — Bright solid core
+  // Exact core polygon (×1.0). Horizontal gradient with a near-white centre:
+  // the ribbon's hue with reduced saturation and raised lightness so the spine
+  // reads as luminous. 'source-over' preserves the vivid HSL color rather than
+  // washing it out with additive blending.
+  // -----------------------------------------------------------------------
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = ribbon.opacity * 0.95;
+
+  // Near-white: reduce saturation toward pure white, push lightness toward 90.
+  // The hue is retained so it reads as tinted-bright, not neutral-white.
+  const coreS = Math.max(s - 15, 5);
+  const coreL = Math.min(l + 25, 90);
+
+  const coreSpan = midHalf * 1.0;
+  const coreGrad = ctx.createLinearGradient(midCx - coreSpan, 0, midCx + coreSpan, 0);
+  coreGrad.addColorStop(0.0, `hsla(${h},${coreS}%,${coreL}%,0)`);
+  coreGrad.addColorStop(0.5, `hsla(${h},${coreS}%,${coreL}%,1)`);
+  coreGrad.addColorStop(1.0, `hsla(${h},${coreS}%,${coreL}%,0)`);
+  ctx.fillStyle = coreGrad;
+  buildPolygonPath(leftEdge, rightEdge, 1.0);
+  ctx.fill();
 
   ctx.globalAlpha = 1.0;
   ctx.restore();
