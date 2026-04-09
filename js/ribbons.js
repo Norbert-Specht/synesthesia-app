@@ -22,12 +22,9 @@ import { renderMode } from './ui.js';
 // RIBBON SYSTEM — CONSTANTS
 // ================================
 
-// How long a new dominant pitch must remain stable before triggering a ribbon
-// transition. 250ms catches melodic note changes (piano notes at moderate tempo
-// are ~300–500ms apart) while still smoothing over very short passing tones and
-// vibrato. Previous value: 500ms — too long; pitch changes were never detected
-// on melodic content because each note resolved before the debounce fired.
-const RIBBON_DEBOUNCE_MS = 250;
+// Debounce for pitch transitions is now adaptive — computed per frame from the
+// dominant pitch's chroma energy rather than a fixed constant. See the
+// debounceMs calculation inside updateRibbonLifecycle() and updateGlowstickLifecycle().
 
 // Hard cap on simultaneous live ribbons (1 primary + up to 2 secondary).
 // Matches the research: one dominant color with 1–2 harmonic tints.
@@ -394,8 +391,8 @@ function spawnGlowCluster(pitchClass, chromaEnergy, role) {
 // Called every frame. Drives the ribbon pool state machine:
 //   1. Removes 'dead' ribbons from the pool.
 //   2. Reads audioData.dominantPitch to detect pitch changes.
-//   3. Applies a 500ms debounce so vibrato / passing tones don't trigger
-//      spurious ribbon transitions.
+//   3. Applies an adaptive debounce (80–180ms, or Infinity for weak pitches)
+//      so vibrato / passing tones don't trigger spurious ribbon transitions.
 //   4. On confirmed pitch change: demotes current primary to secondary,
 //      fades excess secondaries, spawns a new primary.
 //   5. First-ribbon fast-path: bypasses debounce on an empty pool so the
@@ -425,7 +422,15 @@ export function updateRibbonLifecycle() {
     return;
   }
 
-  // --- Debounce: pitch change only fires after 500ms of stability ---
+  // --- Adaptive debounce: response speed scales with pitch detection confidence ---
+  // Strong clear notes (energy > 0.65) trigger almost instantly (80ms).
+  // Moderate confidence (0.35–0.65) waits 180ms before committing.
+  // Below 0.35 the pitch is noise — never trigger a transition.
+  const dominantEnergy = audioData.chroma[audioData.dominantPitch];
+  const debounceMs = dominantEnergy > 0.65 ? 80
+                   : dominantEnergy > 0.35 ? 180
+                   : Infinity;   // below threshold — ignore
+
   if (newDominant !== dominantPitchCandidate) {
     // Candidate shifted — restart the timer.
     dominantPitchCandidate     = newDominant;
@@ -434,7 +439,7 @@ export function updateRibbonLifecycle() {
   }
 
   // Still inside the debounce window — hold off.
-  if ((now - dominantPitchDebounceStart) < RIBBON_DEBOUNCE_MS) return;
+  if ((now - dominantPitchDebounceStart) < debounceMs) return;
 
   // --- Check whether the stabilised pitch differs from the current primary ---
   const currentPrimary = ribbons.find(
@@ -496,7 +501,7 @@ export function updateRibbonLifecycle() {
 // Pool state machine (mirrors aurora lifecycle but with different thresholds):
 //   1. Prune dead sticks.
 //   2. Fast-path: if pool is empty, spawn immediately without debounce.
-//   3. Debounce 500ms before acting on a pitch change.
+//   3. Adaptive debounce (80–180ms) before acting on a pitch change.
 //   4. On confirmed dominant pitch change: fade all current sticks,
 //      spawn new clusters for dominant + secondary + tertiary pitches.
 //   5. Retire oldest tertiary solo first when MAX_GLOWSTICKS would be exceeded.
@@ -529,13 +534,20 @@ export function updateGlowstickLifecycle() {
     return;
   }
 
-  // --- Debounce: only act on a pitch that has been stable for 500ms ---
+  // --- Adaptive debounce: mirrors the aurora lifecycle debounce logic ---
+  // Same energy thresholds — strong notes respond at 80ms, moderate at 180ms,
+  // below 0.35 energy the pitch is treated as noise and ignored.
+  const dominantEnergy = audioData.chroma[audioData.dominantPitch];
+  const debounceMs = dominantEnergy > 0.65 ? 80
+                   : dominantEnergy > 0.35 ? 180
+                   : Infinity;   // below threshold — ignore
+
   if (newDominant !== glowstickPitchCandidate) {
     glowstickPitchCandidate     = newDominant;
     glowstickPitchDebounceStart = now;
     return;
   }
-  if ((now - glowstickPitchDebounceStart) < RIBBON_DEBOUNCE_MS) return;
+  if ((now - glowstickPitchDebounceStart) < debounceMs) return;
 
   // --- Check if the stabilised dominant pitch is already represented ---
   const currentDominantStick = glowsticks.find(

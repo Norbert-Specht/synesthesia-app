@@ -562,7 +562,8 @@ function drawRibbonGlowstick(ribbon, time) {
   const labelW    = labelSize + labelPad * 2;
   const labelH    = labelSize + labelPad * 2;
   const labelX    = cx - labelW / 2;
-  const labelY    = canvas.height - labelH - 12;
+  // 72px = controls bar height, 16px = gap above bar, 12px = internal padding
+  const labelY    = canvas.height - labelH - 72 - 16;
 
   // Dark background square — gives the white text contrast against the canvas.
   ctx.globalCompositeOperation = 'source-over';
