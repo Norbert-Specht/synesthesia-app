@@ -10,7 +10,8 @@
 //   import './player.js';
 // =============================================================================
 
-import { audioCtx, meydaAnalyzer, initAudioContext, resetMeydaFeatures } from './audio.js';
+import { audioCtx, meydaAnalyzer, initAudioContext, resetMeydaFeatures, resetAudioState } from './audio.js';
+import { resetVisualization } from './ribbons.js';
 
 
 // ================================
@@ -211,6 +212,16 @@ function loadAudioFile(file) {
   // persist into the new track's first frames. updateAudioData() will fall
   // back to neutral idle values until the new track's first Meyda callback fires.
   resetMeydaFeatures();
+
+  // Reset transient audio analysis state — clears smoothed chroma, flux
+  // history, and beat intensity so the previous track's values don't bleed
+  // into the first frames of the new track.
+  resetAudioState();
+
+  // Clear all ribbons and glow sticks and reset debounce state so the
+  // visualization starts clean. Without this, ribbons from the previous
+  // track stay frozen on screen while the new track's audio plays.
+  resetVisualization();
 
   // Reset the progress bar to zero. Duration is unknown at this point
   // (the audio element hasn't parsed the new file yet), so total time

@@ -669,6 +669,40 @@ export function updateRibbonOpacities() {
 // (beat flashes, amplitude swells) are reflected in the rendered color.
 // ================================
 
+// ================================
+// VISUALIZATION RESET
+//
+// Clears all ribbon and glow stick state when a new track loads.
+// Called by player.js via loadAudioFile() on every track change.
+//
+// Why both pools:
+//   The aurora pool (ribbons) and glow stick pool (glowsticks) are
+//   independent. Whichever mode is active when the track changes will
+//   have live ribbons; the inactive pool may also have fading remnants.
+//   Both must be cleared so no stale visual state carries into the new track.
+//
+// Why reset debounce state:
+//   If a debounce timer is mid-countdown when the track changes, the lifecycle
+//   manager may fire an immediate transition on the first frame of the new
+//   track as if the old countdown had already elapsed. Resetting forces
+//   full re-evaluation from a known-clean state.
+// ================================
+
+export function resetVisualization() {
+  // Clear both pools immediately — skip the normal fade-out lifecycle.
+  ribbons.length    = 0;
+  glowsticks.length = 0;
+
+  // Reset aurora debounce state.
+  dominantPitchCandidate     = -1;
+  dominantPitchDebounceStart = 0;
+
+  // Reset glow stick debounce state.
+  glowstickPitchCandidate     = -1;
+  glowstickPitchDebounceStart = 0;
+}
+
+
 export function updateGlowstickOpacities() {
   glowsticks.forEach(s => {
     const rate = s.state === 'rising' ? GLOWSTICK_RISE_RATE

@@ -317,6 +317,28 @@ export function resetMeydaFeatures() {
 
 
 // ================================
+// AUDIO ANALYSIS — RESET TRANSIENT STATE
+//
+// Resets per-track transient analysis state on track change.
+// Prevents chroma and onset values from the previous track bleeding into
+// the first frames of the new track.
+//
+// Called by player.js inside loadAudioFile(), alongside resetMeydaFeatures().
+//
+// Guards on previousFreqData and fluxHistory because this may be called before
+// initAudioContext() on hypothetical first-load edge cases, though in practice
+// loadAudioFile() always calls initAudioContext() first.
+// ================================
+
+export function resetAudioState() {
+  smoothedChroma.fill(0.05);         // idle equal distribution — no pitch bias
+  if (previousFreqData) previousFreqData.fill(0);   // zero flux baseline
+  fluxHistory.length = 0;            // clear rolling flux history
+  beatIntensityInternal = 0;         // no beat intensity carried over
+}
+
+
+// ================================
 // AUDIO ANALYSIS — DOMINANT PITCH DETECTION
 //
 // Finds the dominant and secondary pitch classes from the smoothed chroma
