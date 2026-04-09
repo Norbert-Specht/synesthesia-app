@@ -308,13 +308,13 @@ function spawnRibbon(pitchClass, role) {
     //
     // isBright — first 2 bristles render on coreCtx (sharp, thin, near-white),
     //   last 3 render on glowCtx (solid color fill, receives CSS blur).
-    bristles: Array.from({ length: 5 }, (_, i) => ({
-      xOffset:        (Math.random() - 0.5) * 0.7,  // lateral offset as fraction of full ribbon width
-      opacityScale:   0.55 + Math.random() * 0.45,   // 0.55–1.0 relative opacity
-      thicknessScale: 0.50 + Math.random() * 0.55,   // 0.5–1.05 relative width
-      heightScale:    0.88 + Math.random() * 0.12,   // 0.88–1.0 of full ribbon height
-      phaseOffset:    (Math.random() - 0.5) * 0.4,   // small phase variation so bristles don't sync
-      isBright:       i < 2,  // first 2 = sharp core bristles; last 3 = blurred glow bristles
+    bristles: Array.from({ length: 9 }, (_, i) => ({
+      xOffset:        (Math.random() - 0.5) * 0.85,  // slightly wider spread for 9 bristles
+      opacityScale:   0.72 + Math.random() * 0.28,   // 0.72–1.0 — raised floor (blur reduces apparent opacity)
+      thicknessScale: 0.15 + Math.random() * 0.90,   // 0.15–1.05 — dramatic range: threads to full width
+      heightScale:    0.85 + Math.random() * 0.15,   // 0.85–1.0 — slightly more height variation
+      phaseOffset:    (Math.random() - 0.5) * 0.55,  // slightly wider phase variation for 9 bristles
+      isBright:       i < 3,  // first 3 = sharp core bristles; last 6 = blurred glow bristles
     })),
   };
 }

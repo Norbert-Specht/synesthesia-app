@@ -592,7 +592,9 @@ function drawBristle(ribbon, bristle, time, h, s, l, ribbonOpacity, baseHalfWidt
     // A gradient inside a blurred polygon would double-apply falloff,
     // making the glow edges too weak and the body too dim.
     buildPolygonPathOnCtx(targetCtx, leftEdge, rightEdge, 1.0);
-    targetCtx.fillStyle = `hsla(${h}, ${s}%, ${l}%, ${avgOpacity * 0.85})`;
+    // Removed the 0.85 reduction — CSS blur provides edge transparency naturally.
+    // Full opacity at the bristle center gives the vivid core needed for luminosity.
+    targetCtx.fillStyle = `hsla(${h}, ${s}%, ${l}%, ${avgOpacity})`;
     targetCtx.fill();
   }
 

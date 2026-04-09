@@ -100,19 +100,21 @@ export function getAuroraColor(pitchClass) {
   const base = activeProfile.pitchColors[pitchClass];
   const h = base.h;
 
-  // Force minimum saturation of 82% — profile values can be as low as 22%
-  // which reads as near-grey on a dark background
-  const s = Math.max(82, base.s) + audioData.amplitude * 12;
+  // Force minimum saturation of 88% — raised from 82% since CSS blur diffuses
+  // color outward, reducing perceived vividness of the blurred glow bristles
+  const s = Math.max(88, base.s) + audioData.amplitude * 14;
 
-  // Force minimum lightness of 58% — below this, colors read as dark on
-  // dark background even at reasonable opacity values
-  const l = Math.max(58, base.l)
-            + audioData.amplitude * 10
-            + audioData.beatIntensity * 8;
+  // Force minimum lightness of 68% — raised from 58% because blur reduces
+  // perceived brightness; colors need to be genuinely vivid before blurring.
+  // Amplitude range raised to 14 for stronger dynamic response.
+  // Beat intensity raised to 10 for a brighter onset flash.
+  const l = Math.max(68, base.l)
+            + audioData.amplitude * 14
+            + audioData.beatIntensity * 10;
 
   return {
     h,
     s: Math.min(96, s),
-    l: Math.min(78, l),
+    l: Math.min(84, l),   // ceiling raised from 78 → 84 for more brightness headroom
   };
 }
