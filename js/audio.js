@@ -123,7 +123,7 @@ const FLUX_THRESHOLD_MULTIPLIER = 1.5;
 // Minimum milliseconds between two consecutive onset triggers.
 // 100ms = max ~10 onsets/second, which covers fast 16th-note passages at 150bpm.
 // Prevents a single loud transient from double-firing across adjacent frames.
-const ONSET_COOLDOWN_MS = 150;
+const ONSET_COOLDOWN_MS = 120;
 
 // Per-frame decay factor applied to beatIntensity after each onset.
 // 0.88 means intensity halves in roughly 5 frames (~83ms at 60fps).
