@@ -668,7 +668,7 @@ export function updateGlowstickLifecycle() {
 function getAnimationSpeedFactor() {
   const bpm        = getBPM();
   const normalized = Math.max(0, (bpm - 60) / 120);   // 0.0 at 60 BPM, 1.0 at 180 BPM
-  const curved     = Math.pow(normalized, 0.7);        // gentle curve — compresses high end
+  const curved     = Math.pow(normalized, 0.80);       // gentle curve — compresses high end
   const factor     = 0.5 + curved;
   return Math.min(1.3, Math.max(0.4, factor));
 }
