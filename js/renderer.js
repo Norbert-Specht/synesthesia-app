@@ -32,16 +32,47 @@ const LABEL_FONT = `400 52px 'Plus Jakarta Sans', system-ui, sans-serif`;
 
 // ================================
 // CANVAS SETUP
+//
+// Three-canvas aurora stack — all fixed full-viewport, stacked by z-index.
+//
+// Why three canvases instead of one:
+//   CSS filter:blur applied to a canvas element blurs everything already
+//   drawn on it as a composited layer. This is the most efficient way to
+//   create a soft atmospheric glow — the GPU composites the blur after all
+//   bristle polygons are written, so separate bristles merge into one
+//   continuous glowing shape. ctx.filter would blur each bristle separately,
+//   producing individually blurred strands that never blend together.
+//
+//   The core canvas has no blur — those bristles must stay razor-sharp
+//   to create the hot bright filaments inside the glow mass.
+//
+//   The background canvas (sky + stars) is separate from the aurora stack
+//   so clearing it each frame doesn't disturb the other two, and so
+//   glow stick mode can hide both aurora canvases cleanly.
 // ================================
 
+// Background canvas — sky gradient and stars only (z-index 0 in CSS)
 export const canvas = document.getElementById('aurora-canvas');
 export const ctx    = canvas.getContext('2d');
 
-// Match canvas pixel dimensions to the viewport on load and every resize.
-// Without this, the canvas defaults to 300×150px and everything stretches.
+// Glow canvas — solid vivid bristle shapes; CSS blur(20px) applied via stylesheet
+// All glow bristles draw here each frame; the element-level blur composites them.
+const glowCanvas = document.getElementById('aurora-glow-canvas');
+const glowCtx    = glowCanvas.getContext('2d');
+
+// Core canvas — thin bright bristle lines; no blur (z-index 2 in CSS)
+// These bristles render sharp on top of the diffused glow layer.
+const coreCanvas = document.getElementById('aurora-core-canvas');
+const coreCtx    = coreCanvas.getContext('2d');
+
+// Match all three canvas pixel dimensions to the viewport on load and every resize.
+// Without this, canvases default to 300×150px and everything stretches.
 export function resizeCanvas() {
-  canvas.width  = window.innerWidth;
-  canvas.height = window.innerHeight;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  canvas.width      = w;  canvas.height      = h;
+  glowCanvas.width  = w;  glowCanvas.height  = h;
+  coreCanvas.width  = w;  coreCanvas.height  = h;
 }
 
 
@@ -127,6 +158,13 @@ export function drawBackground(time) {
   // Generate and cache star positions on first call.
   if (!stars) stars = generateStars(180);
 
+  // Clear the aurora bristle canvases at the start of each frame.
+  // The background canvas is cleared implicitly by the sky gradient fillRect below.
+  // glowCtx and coreCtx must be cleared explicitly — they don't fill their entire
+  // area each frame (bristles only cover part of each canvas).
+  glowCtx.clearRect(0, 0, glowCanvas.width, glowCanvas.height);
+  coreCtx.clearRect(0, 0, coreCanvas.width, coreCanvas.height);
+
   // Lerp sky hue toward the opacity-weighted average of active ribbon hues.
   // 0.002 per frame is nearly imperceptible but produces a clear hue shift
   // over 10–30 seconds, tinting the sky with the dominant harmony.
@@ -196,6 +234,51 @@ function buildPolygonPath(leftEdge, rightEdge, widthMultiplier) {
   }
 
   ctx.closePath();
+}
+
+
+// ================================
+// RIBBON SYSTEM — CONTEXT-TARGETED POLYGON PATH BUILDER
+//
+// Identical to buildPolygonPath() but targets a caller-supplied context
+// instead of always drawing on the main ctx. Used by aurora bristle rendering
+// so individual bristles can be routed to glowCtx or coreCtx independently.
+//
+// The original buildPolygonPath() remains in place and unchanged — it is
+// still used by drawRibbonGlowstick() which always draws on the main ctx.
+//
+// Parameters:
+//   targetCtx       — CanvasRenderingContext2D to draw on (glowCtx or coreCtx)
+//   leftEdge        — array of {x, y} points; left core boundary, bottom→top
+//   rightEdge       — array of {x, y} points; right core boundary, bottom→top
+//   widthMultiplier — expansion factor beyond core half-width (1.0 = exact polygon)
+// ================================
+
+function buildPolygonPathOnCtx(targetCtx, leftEdge, rightEdge, widthMultiplier) {
+  targetCtx.beginPath();
+
+  const n = leftEdge.length;
+
+  // Trace left edge upward; each point expanded outward from the centerline.
+  for (let i = 0; i < n; i++) {
+    const lx = leftEdge[i].x;
+    const rx = rightEdge[i].x;
+    const cx = (lx + rx) / 2;
+    const ax = cx - (cx - lx) * widthMultiplier;
+    if (i === 0) targetCtx.moveTo(ax, leftEdge[i].y);
+    else         targetCtx.lineTo(ax, leftEdge[i].y);
+  }
+
+  // Trace right edge back downward to close the polygon.
+  for (let i = n - 1; i >= 0; i--) {
+    const lx = leftEdge[i].x;
+    const rx = rightEdge[i].x;
+    const cx = (lx + rx) / 2;
+    const ax = cx + (rx - cx) * widthMultiplier;
+    targetCtx.lineTo(ax, leftEdge[i].y);
+  }
+
+  targetCtx.closePath();
 }
 
 
@@ -296,6 +379,51 @@ function drawNoteLabel(ribbon) {
 }
 
 
+// ================================
+// RIBBON SYSTEM — AURORA RENDERER (BRISTLE-BASED, TWO-CANVAS)
+//
+// Why bristles instead of one polygon:
+//   A single solid polygon reads as a flat painted shape — no internal texture,
+//   no sense of depth. Real aurora has visible vertical striations: individual
+//   luminous rays with slightly different paths, widths, and brightnesses.
+//   Five bristle polygons sharing the same overall path but with per-bristle
+//   x-offsets and thickness scales produce these striations naturally. The gaps
+//   between them emerge from geometry, not explicit gap drawing.
+//
+// Why two canvases:
+//   Glow bristles (3 of 5) render on glowCtx, which receives CSS blur(20px)
+//   as a DOM-level filter. This means all bristles composite first, then the
+//   entire layer blurs as a single image — creating a wide, soft atmospheric
+//   glow that correctly bleeds between adjacent strands. ctx.filter would blur
+//   each bristle independently before compositing, preventing the merging.
+//
+//   Core bristles (2 of 5, isBright=true) render on coreCtx with no blur.
+//   These stay razor-sharp — thin hot filaments sitting on top of the glow.
+//
+// Why glow bristles use solid color fills (not gradients):
+//   The blur IS the gradient. A solid-color polygon blurred by 20px becomes
+//   a soft glow shape with natural falloff at all edges. Using a gradient
+//   inside a blurred polygon would double-apply the falloff, making edges
+//   too weak. The vivid solid fill + CSS blur produces the intended effect.
+//
+// Why core bristles are 22% of glow bristle width:
+//   At 22%, core bristles are thin enough to read as individual filaments
+//   rather than competing with the glow mass. Too thick and they look like
+//   solid painted bars; too thin and they disappear below the blur.
+//
+// How bristle gap texture emerges:
+//   Each bristle has a random xOffset (±0.7 × half-width) and thicknessScale
+//   (0.5–1.05). The combination means some bristles are shifted left, some
+//   right; some wide, some narrow. Where two bristles don't overlap, the
+//   sky/stars show through. The result is an organic fibrous texture across
+//   the full ribbon height without any explicit gap-drawing code.
+//
+// Why heightScale creates slightly different bristle lengths:
+//   Real aurora rays don't all reach the same altitude. heightScale (0.88–1.0)
+//   means 1–2 bristles terminate slightly below the top of the ribbon, adding
+//   a ragged-top appearance that looks more atmospheric than a flat ceiling.
+// ================================
+
 function drawRibbonAurora(ribbon, time) {
   if (ribbon.opacity < 0.005) return;
 
@@ -303,214 +431,172 @@ function drawRibbonAurora(ribbon, time) {
   // Profile hue is always preserved — it carries the chromesthesia identity.
   const { h, s, l } = getAuroraColor(ribbon.pitchClass);
 
-  // --- Build left and right edge arrays (bottom → top) ---
-  // One point every 4 canvas pixels — finer resolution than before to capture
-  // the sharp width transitions of brush stroke geometry without polygon faceting.
-  const STEPS = Math.ceil(canvas.height / 4);
+  // Composite ribbon opacity: lifecycle × musical role intensity.
+  // Individual bristles multiply this by their own opacityScale.
+  const ribbonOpacity = ribbon.opacity * (ribbon.glowIntensity ?? 1.0);
+
+  // Base half-width for the ribbon — bristles offset and scale from this.
+  // Amplitude scaling makes the ribbon fan wider on loud passages.
+  const baseHalfWidth = canvas.width * 0.028 * ribbon.thickness
+                        * (0.7 + audioData.amplitude * 0.6);
+
+  // Draw all 5 bristles — each routes to glowCtx or coreCtx via isBright.
+  ribbon.bristles.forEach(bristle => {
+    drawBristle(ribbon, bristle, time, h, s, l, ribbonOpacity, baseHalfWidth);
+  });
+
+  // Note label draws on the main ctx (always sharp, always on top of the aurora stack).
+  drawNoteLabel(ribbon);
+}
+
+
+// ================================
+// AURORA RENDERER — SINGLE BRISTLE
+//
+// Renders one bristle of an aurora ribbon onto glowCtx or coreCtx.
+//
+// Bright bristles (bristle.isBright === true) → coreCtx — sharp, thin, no blur.
+// Glow bristles → glowCtx — receives CSS blur(20px) at the element level.
+//
+// The bristle follows the same underlying sine wave path as the ribbon but with
+// a per-bristle xOffset and phaseOffset. Width varies along the bristle's height
+// using the same three-frequency noise as before, scaled by bristle.thicknessScale.
+//
+// Glow bristles use a solid color fill — the CSS blur on glowCtx IS the soft
+// edge falloff. A gradient fill inside a blurred polygon would double-apply
+// the alpha falloff and make edges too weak.
+//
+// Core bristles use a horizontal gradient (vivid color → near-white at center)
+// to create the hot filament appearance on the sharp canvas.
+//
+// Parameters:
+//   ribbon        — ribbon object (xFraction, waveFreq1/2, driftSpeed, etc.)
+//   bristle       — bristle descriptor from ribbon.bristles[]
+//   time          — shared animation time counter
+//   h, s, l       — aurora-specific HSL color from getAuroraColor()
+//   ribbonOpacity — ribbon.opacity × glowIntensity composite
+//   baseHalfWidth — base ribbon half-width at current amplitude
+// ================================
+
+function drawBristle(ribbon, bristle, time, h, s, l, ribbonOpacity, baseHalfWidth) {
+  // Route to the correct canvas: bright bristles → sharp core canvas,
+  // glow bristles → blurred atmospheric canvas.
+  const targetCtx  = bristle.isBright ? coreCtx : glowCtx;
+  const w          = canvas.width;
+  const h_canvas   = canvas.height;
+
+  // One point every 5 canvas pixels — slightly coarser than the old geometry
+  // loop (4px) to reduce work since we now run this loop 5× per ribbon.
+  const STEPS    = Math.ceil(h_canvas / 5);
   const leftEdge  = [];
   const rightEdge = [];
 
   for (let i = 0; i <= STEPS; i++) {
-    const y        = canvas.height * (1 - i / STEPS);
-    const progress = i / STEPS;   // 0 at bottom, 1 at top
+    // heightScale — some bristles are slightly shorter than the full ribbon
+    // height, creating a ragged top edge that reads as atmospheric.
+    const maxProgress = bristle.heightScale;
+    const progress    = (i / STEPS) * maxProgress;
+    const y           = h_canvas * (1 - progress);
 
-    // ── Trajectory ──────────────────────────────────────────────────────────
-    // Three components combine to give an organic, non-periodic path:
-    //   phase1: primary lateral curl (medium frequency)
-    //   phase2: secondary wobble (different frequency — avoids perfect repeat)
-    //   drift:  slow overall lean — breaks left/right symmetry of pure sine
-
+    // ── Trajectory — same three-component path as the ribbon ──────────────
+    // phaseOffset is added to both phases so the bristle's path diverges
+    // slightly from the ribbon center — this is what creates the visible
+    // striations between bristles.
     const phase1 = progress * Math.PI * 2 * ribbon.waveFreq1
-                   + time * ribbon.driftSpeed + ribbon.timeOffset;
+                   + time * ribbon.driftSpeed
+                   + ribbon.timeOffset
+                   + bristle.phaseOffset;
     const phase2 = progress * Math.PI * 2 * ribbon.waveFreq2
-                   + time * ribbon.driftSpeed * 0.55 + ribbon.timeOffset * 0.7;
+                   + time * ribbon.driftSpeed * 0.55
+                   + ribbon.timeOffset * 0.7
+                   + bristle.phaseOffset * 0.6;
     const drift  = Math.sin(
                      progress * Math.PI * 0.6
                      + time * 0.06
                      + ribbon.timeOffset * 2.1
-                   ) * canvas.width * 0.032;
+                   ) * w * 0.032;
 
-    const xAmplitude = canvas.width * 0.018;
-    const cx = ribbon.xFraction * canvas.width
+    const xAmplitude = w * 0.018;
+    // Bristle center x: ribbon path + bristle lateral offset.
+    // xOffset is a fraction of baseHalfWidth * 2 (full ribbon width) so it
+    // scales proportionally with ribbon size — narrow ribbons get tighter gaps.
+    const cx = ribbon.xFraction * w
                + Math.sin(phase1) * xAmplitude
                + Math.sin(phase2) * xAmplitude * ribbon.wobbleRatio
-               + drift;
+               + drift
+               + bristle.xOffset * baseHalfWidth * 2;
 
-    // ── Brush stroke width ──────────────────────────────────────────────────
-    // Three layered noise frequencies combine into a single width multiplier:
-    //   slow:   large-scale shape — 1–2 wide fans across full ribbon height
-    //   medium: secondary billowing — adds internal variation to each fan
-    //   fast:   local edge texture — prevents edges feeling too smooth
-    //
-    // Weighted sum: slow dominates (0.65) so the drama reads at large scale.
-    // Combined ranges from -1 to +1:
-    //   near -1 → ribbon almost disappears (thread moment)
-    //   near +1 → ribbon fans dramatically wide
-
-    const slow   = Math.sin(progress * Math.PI * 1.2
-                   + time * 0.07 + ribbon.timeOffset);
-    const medium = Math.sin(progress * Math.PI * 2.8
-                   + time * 0.13 + ribbon.timeOffset * 1.3);
-    const fast   = Math.sin(progress * Math.PI * 6.1
-                   + time * 0.21 + ribbon.timeOffset * 0.7);
-
+    // ── Brush stroke width variation — same three-frequency noise ──────────
+    const slow   = Math.sin(progress * Math.PI * 1.2 + time * 0.07 + ribbon.timeOffset);
+    const medium = Math.sin(progress * Math.PI * 2.8 + time * 0.13 + ribbon.timeOffset * 1.3);
+    const fast   = Math.sin(progress * Math.PI * 6.1 + time * 0.21 + ribbon.timeOffset * 0.7);
     const combined = slow * 0.65 + medium * 0.25 + fast * 0.10;
 
-    // ── Amplitude modulation ────────────────────────────────────────────────
-    // Loud music fans the ribbon wide. Quiet music narrows it to a thread.
-    // amplitudeFan: 0.0 at silence → 1.0 at full volume
-    // This is the primary musical connection for the aurora shape.
-    //
-    // amplitudeFan scales the RANGE of the brush stroke variation:
-    //   At low amplitude: multiplier stays near 0.5–0.8 (always somewhat narrow)
-    //   At high amplitude: multiplier can reach 0.05–2.6 (full dramatic range)
-
-    const amplitudeFan = audioData.amplitude;
-    const baseWidth    = canvas.width * 0.032 * ribbon.thickness;
-
-    // thickMultiplier: minimum 0.05 so ribbon never fully disappears (Option A)
-    // Maximum driven by amplitude — louder = wider possible fans
-    const maxExpansion    = 0.8 + amplitudeFan * 1.6;   // 0.8→2.4 range with amplitude
+    const amplitudeFan    = audioData.amplitude;
+    const maxExpansion    = 0.8 + amplitudeFan * 1.6;
     const thickMultiplier = Math.max(0.05, 1.0 + combined * maxExpansion);
-    const coreHalfWidth   = baseWidth * thickMultiplier;
 
-    // ── Opacity variation along ribbon length ───────────────────────────────
-    // The ribbon is more opaque where it's wide, more transparent where thin.
-    // This mirrors how a brush stroke behaves — more ink where pressure is high.
-    // Opacity also modulated by the slow noise component only (large scale).
+    // Bristle half-width: ribbon base × brush noise × bristle's own thicknessScale.
+    // Core bristles (isBright) are 22% as wide as glow bristles —
+    // thin enough to read as individual filaments inside the glow mass.
+    const bristleHalfWidth = baseHalfWidth
+                             * thickMultiplier
+                             * bristle.thicknessScale
+                             * (bristle.isBright ? 0.22 : 1.0);
 
-    const lengthOpacity  = Math.max(0.08, 0.6 + slow * 0.55);
-
-    // Origin fade — ribbon appears to rise from horizon on loud passages
-    const originFadeH    = canvas.height * (0.80 - audioData.amplitude * 0.50);
-    const distFromBottom = canvas.height - y;
+    // ── Opacity along the bristle length ──────────────────────────────────
+    // Origin fade: transparent at the canvas bottom, opaque above originFadeH.
+    // lengthOpacity: more opaque where the bristle is wide (brush pressure model).
+    const originFadeH    = h_canvas * (0.80 - audioData.amplitude * 0.50);
+    const distFromBottom = h_canvas - y;
     const originOpacity  = Math.min(1, distFromBottom / Math.max(1, originFadeH));
-    const pointOpacity   = ribbon.opacity * lengthOpacity * originOpacity;
+    const lengthOpacity  = Math.max(0.08, 0.6 + slow * 0.55);
+    const pointOpacity   = ribbonOpacity
+                           * bristle.opacityScale
+                           * lengthOpacity
+                           * originOpacity;
 
-    leftEdge.push({ x: cx - coreHalfWidth, y, pointOpacity, coreHalfWidth });
-    rightEdge.push({ x: cx + coreHalfWidth, y, pointOpacity, coreHalfWidth });
+    leftEdge.push({ x: cx - bristleHalfWidth, y, pointOpacity, bristleHalfWidth });
+    rightEdge.push({ x: cx + bristleHalfWidth, y, pointOpacity, bristleHalfWidth });
   }
 
-  // --- Option D: glow edge color from the complementary ribbon ---
-  // Primary ribbons: edges blend toward any active secondary ribbon's hue.
-  // Secondary ribbons: edges blend toward the primary ribbon's hue.
-  // Falls back to the ribbon's own color if no complement is live.
-  let glowH = h, glowS = s, glowL = l;
-  if (ribbon.role === 'primary') {
-    const sec = ribbons.find(
-      r => r.role === 'secondary' && r.state !== 'dead' && r.opacity > 0.05
+  // ── Render onto target canvas ─────────────────────────────────────────────
+  targetCtx.save();
+  targetCtx.globalCompositeOperation = 'source-over';
+  targetCtx.globalAlpha = 1.0;
+
+  const midI   = Math.floor(leftEdge.length / 2);
+  const avgOpacity = leftEdge.reduce((sum, p) => sum + p.pointOpacity, 0) / leftEdge.length;
+  const avgX   = (leftEdge[midI].x + rightEdge[midI].x) / 2;
+  const avgHW  = leftEdge[midI].bristleHalfWidth;
+
+  if (bristle.isBright) {
+    // ── Core bristle — thin, near-white filament, drawn sharp on coreCtx ──
+    // Horizontal gradient: vivid color at edges → near-white at center.
+    // The gradient on the sharp canvas creates the "hot filament" look.
+    buildPolygonPathOnCtx(targetCtx, leftEdge, rightEdge, 1.0);
+    const coreGrad = targetCtx.createLinearGradient(
+      avgX - avgHW, 0, avgX + avgHW, 0
     );
-    if (sec) { glowH = sec.hsl.h; glowS = sec.hsl.s; glowL = sec.hsl.l; }
+    coreGrad.addColorStop(0.0, `hsla(${h}, ${s}%,      ${l}%,      ${0.50 * avgOpacity})`);
+    coreGrad.addColorStop(0.3, `hsla(${h}, ${s - 15}%, ${l + 15}%, ${0.85 * avgOpacity})`);
+    coreGrad.addColorStop(0.5, `hsla(0,    0%,          97%,        ${0.95 * avgOpacity})`);
+    coreGrad.addColorStop(0.7, `hsla(${h}, ${s - 15}%, ${l + 15}%, ${0.85 * avgOpacity})`);
+    coreGrad.addColorStop(1.0, `hsla(${h}, ${s}%,      ${l}%,      ${0.50 * avgOpacity})`);
+    targetCtx.fillStyle = coreGrad;
+    targetCtx.fill();
+
   } else {
-    const pri = ribbons.find(
-      r => r.role === 'primary' && r.state !== 'dead' && r.opacity > 0.05
-    );
-    if (pri) { glowH = pri.hsl.h; glowS = pri.hsl.s; glowL = pri.hsl.l; }
+    // ── Glow bristle — solid vivid color, drawn on glowCtx ──────────────
+    // Solid color fill (not gradient) because the CSS blur IS the soft edge.
+    // A gradient inside a blurred polygon would double-apply falloff,
+    // making the glow edges too weak and the body too dim.
+    buildPolygonPathOnCtx(targetCtx, leftEdge, rightEdge, 1.0);
+    targetCtx.fillStyle = `hsla(${h}, ${s}%, ${l}%, ${avgOpacity * 0.85})`;
+    targetCtx.fill();
   }
 
-  // --- Gradient anchor ---
-  // midCx: horizontal center at the ribbon midpoint, for gradient positioning.
-  // avgThick: mean coreHalfWidth across all points — drives gradient sizing and
-  //           the dynamic polygon multiplier calculation below.
-  const midIdx  = Math.floor(leftEdge.length / 2);
-  const midCx   = (leftEdge[midIdx].x + rightEdge[midIdx].x) / 2;
-  const avgThick = leftEdge.reduce((sum, pt) => sum + pt.coreHalfWidth, 0) / leftEdge.length;
-
-  // --- Thickness-responsive glow multipliers ---
-  // thicknessFactor: 1.0 when avgThick equals base width; smaller when thin.
-  // Thin ribbon → large multiplier (tight, intense glow relative to ribbon width).
-  // Wide ribbon → smaller multiplier (soft, broad glow that doesn't overwhelm).
-  const thicknessFactor = Math.max(0.3, Math.min(1.0,
-    avgThick / (canvas.width * 0.032)   // normalize: 1.0 = base ribbon width
-  ));
-
-  const hazeMultiplier = 10 - thicknessFactor * 4;   // range 6–10
-  const glowMultiplier =  5 - thicknessFactor * 2;   // range 3–5
-  // Core multiplier stays 1.0 always — the core IS the ribbon width
-
-  // --- Composite opacity ---
-  // Baked into all gradient stop alphas so ctx.globalAlpha stays 1.0 per pass.
-  // Includes: lifecycle fade × musical role intensity × amplitude pulse.
-  // Clamped to 1.0 — dynamicOpacity can exceed 1.0 at high amplitudes.
-  const dynamicOpacity = 0.45 + audioData.amplitude * 0.75;
-  const opacity = Math.min(1.0, ribbon.opacity * (ribbon.glowIntensity ?? 1.0) * dynamicOpacity);
-
-  ctx.save();
-
-  // -----------------------------------------------------------------------
-  // PASS 1 — Wide atmospheric haze
-  // Wide polygon (hazeMultiplier, 6–10× core). Horizontal gradient, ribbon color.
-  // Exponential falloff: dense luminous atmosphere tight to the core edge.
-  // Thin ribbons get a proportionally wider haze; wide fans get a softer one.
-  // Max stop alpha 0.07 × opacity — sky always visible through this layer.
-  // 'screen' blend adds ambient tint to the sky behind the ribbon.
-  // -----------------------------------------------------------------------
-
-  ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = 1.0;
-
-  const hazeSpan = avgThick * hazeMultiplier;
-  const hazeGrad = ctx.createLinearGradient(midCx - hazeSpan, 0, midCx + hazeSpan, 0);
-  hazeGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  hazeGrad.addColorStop(0.12, `hsla(${h}, ${s}%, ${l}%, ${0.07  * opacity})`);
-  hazeGrad.addColorStop(0.22, `hsla(${h}, ${s}%, ${l}%, ${0.04  * opacity})`);
-  hazeGrad.addColorStop(0.38, `hsla(${h}, ${s}%, ${l}%, ${0.015 * opacity})`);
-  hazeGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  ctx.fillStyle = hazeGrad;
-  buildPolygonPath(leftEdge, rightEdge, hazeMultiplier);
-  ctx.fill();
-
-  // -----------------------------------------------------------------------
-  // PASS 2 — Main glow body
-  // Moderate polygon (glowMultiplier, 3–5× core). Horizontal gradient.
-  // Exponential falloff: most energy packed in the innermost fraction of span.
-  // l+6 / l+3 inner stops push brightness toward the white core.
-  // Thin ribbons get a proportionally wider, more concentrated glow.
-  // Max stop alpha 0.42 × opacity — sky visible through this layer.
-  // 'screen' blend adds glow luminosity on top of the haze layer.
-  // -----------------------------------------------------------------------
-
-  ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = 1.0;
-
-  const glowSpan = avgThick * glowMultiplier;
-  const glowGrad = ctx.createLinearGradient(midCx - glowSpan, 0, midCx + glowSpan, 0);
-  glowGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  glowGrad.addColorStop(0.06, `hsla(${h}, ${s}%, ${l + 6}%, ${0.42 * opacity})`);
-  glowGrad.addColorStop(0.15, `hsla(${h}, ${s}%, ${l + 3}%, ${0.24 * opacity})`);
-  glowGrad.addColorStop(0.28, `hsla(${h}, ${s}%, ${l}%,     ${0.10 * opacity})`);
-  glowGrad.addColorStop(0.45, `hsla(${h}, ${s}%, ${l}%,     ${0.03 * opacity})`);
-  glowGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  ctx.fillStyle = glowGrad;
-  buildPolygonPath(leftEdge, rightEdge, glowMultiplier);
-  ctx.fill();
-
-  // -----------------------------------------------------------------------
-  // PASS 3 — Bright solid core
-  // Exact core polygon (×1.0). Horizontal gradient with a near-white centre.
-  // 'source-over' preserves vivid HSL color; all alpha baked in via opacity
-  // so sky and stars remain visible even through the brightest core.
-  // Max stop alpha 0.82 × opacity — center stop, hottest point.
-  // -----------------------------------------------------------------------
-
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1.0;
-
-  const coreSpan = avgThick * 1.0;
-  const coreGrad = ctx.createLinearGradient(midCx - coreSpan, 0, midCx + coreSpan, 0);
-  coreGrad.addColorStop(0.0, `hsla(${h}, ${s}%,      ${l}%,      ${0.35 * opacity})`);
-  coreGrad.addColorStop(0.3, `hsla(${h}, ${s - 15}%, ${l + 14}%, ${0.65 * opacity})`);
-  coreGrad.addColorStop(0.5, `hsla(0,    0%,          97%,        ${0.82 * opacity})`);
-  coreGrad.addColorStop(0.7, `hsla(${h}, ${s - 15}%, ${l + 14}%, ${0.65 * opacity})`);
-  coreGrad.addColorStop(1.0, `hsla(${h}, ${s}%,      ${l}%,      ${0.35 * opacity})`);
-  ctx.fillStyle = coreGrad;
-  buildPolygonPath(leftEdge, rightEdge, 1.0);
-  ctx.fill();
-
-  ctx.globalAlpha = 1.0;
-  ctx.restore();
-
-  drawNoteLabel(ribbon);
+  targetCtx.restore();
 }
 
 

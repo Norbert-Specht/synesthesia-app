@@ -71,6 +71,34 @@ settingsClose.addEventListener('click', closeSidebar);
 
 
 // ================================
+// RENDER MODE — CANVAS VISIBILITY
+//
+// Aurora mode uses three canvases (background + glow + core).
+// Glow stick mode uses only the background canvas — the aurora bristle
+// canvases must be hidden so their cleared state (transparent black) doesn't
+// cover the glow sticks drawn on the background canvas.
+//
+// Called at module load to set the correct initial state, and inside each
+// pill click handler so the canvases update immediately on mode switch.
+// ================================
+
+function applyRenderMode(mode) {
+  const glowCanvas = document.getElementById('aurora-glow-canvas');
+  const coreCanvas = document.getElementById('aurora-core-canvas');
+  if (mode === 'aurora') {
+    glowCanvas.classList.remove('hidden');
+    coreCanvas.classList.remove('hidden');
+  } else {
+    glowCanvas.classList.add('hidden');
+    coreCanvas.classList.add('hidden');
+  }
+}
+
+// Apply immediately on module load so initial canvas visibility is correct.
+applyRenderMode(renderMode);
+
+
+// ================================
 // VISUALIZATION MODE — PILL BUTTONS
 //
 // Clicking a pill updates renderMode and transfers the .active class to
@@ -82,6 +110,8 @@ pillBtns.forEach(btn => {
     renderMode = btn.dataset.mode;
     pillBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    // Show/hide the aurora bristle canvases immediately on mode switch.
+    applyRenderMode(renderMode);
   });
 });
 

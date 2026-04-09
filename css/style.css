@@ -94,6 +94,10 @@ html, body {
    at its default 300×150px and be upscaled (blurry).
    ================================ */
 
+/* Background canvas — sky gradient and stars only.
+   z-index: 0 keeps it beneath the aurora glow and core canvases.
+   UI overlays (#landing z10, #controls z20, #settings-btn z30,
+   #settings-sidebar z40) all sit above the aurora stack. */
 #aurora-canvas {
   position: fixed;
   top: 0;
@@ -102,6 +106,39 @@ html, body {
   height: 100%;
   /* block removes the default inline gap below canvas in some browsers */
   display: block;
+  z-index: 0;
+}
+
+/* Glow canvas — solid vivid bristle shapes; CSS blur creates atmospheric diffusion.
+   Blur is applied to the DOM element (not ctx.filter) so all bristles composite
+   together first, then blur as a single layer. ctx.filter would blur each bristle
+   independently, preventing the separate strands from merging into one glow mass.
+   Blur amount 20px — start here, tune if needed.
+   Hidden in glow stick mode via .hidden class added by ui.js. */
+#aurora-glow-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 1;
+  filter: blur(20px);
+  -webkit-filter: blur(20px);   /* Safari prefix required */
+}
+
+/* Core canvas — thin bright bristle lines rendered sharp above the glow layer.
+   No filter — these lines must stay crisp and hot on top of the diffused glow.
+   Hidden in glow stick mode via .hidden class added by ui.js. */
+#aurora-core-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 2;
+  /* Intentionally no filter — core lines are always sharp */
 }
 
 

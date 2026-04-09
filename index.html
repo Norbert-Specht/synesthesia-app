@@ -21,11 +21,24 @@
 </head>
 <body>
 
-  <!-- The aurora canvas sits at z-index 0, behind all overlays.
-       Its pixel dimensions are set and kept in sync with the viewport
-       by resizeCanvas() in main.js. CSS width/height 100% only scales
-       the element — actual resolution is set via canvas.width/height. -->
+  <!-- Three-canvas aurora stack (all stacked at 0,0 full-viewport).
+       Background canvas (#aurora-canvas, z-index 0): sky gradient + stars only.
+       Glow canvas (#aurora-glow-canvas, z-index 1): solid vivid bristle shapes;
+         CSS filter:blur applied in style.css creates soft atmospheric diffusion.
+         Blur is on the DOM element, not ctx.filter, so it composites AFTER all
+         bristles are drawn for that frame — ctx.filter would blur each bristle
+         in isolation, preventing them from merging into a single glow mass.
+       Core canvas (#aurora-core-canvas, z-index 2): thin bright bristle lines;
+         no blur — these stay razor-sharp on top of the glow layer.
+       Glow stick mode only uses #aurora-canvas; the other two are hidden. -->
   <canvas id="aurora-canvas"></canvas>
+
+  <!-- Glow canvas — blurred bristle shapes for atmospheric aurora glow -->
+  <!-- CSS filter: blur applied to this element via style.css -->
+  <canvas id="aurora-glow-canvas"></canvas>
+
+  <!-- Core canvas — sharp bright bristle cores, no blur -->
+  <canvas id="aurora-core-canvas"></canvas>
 
   <!-- =====================================================================
        LANDING OVERLAY

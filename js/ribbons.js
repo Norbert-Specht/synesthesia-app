@@ -286,6 +286,36 @@ function spawnRibbon(pitchClass, role) {
     // Dominant is always 1.0 (full intensity). Secondary and tertiary scale
     // with their actual chroma energy so quieter pitch classes appear dimmer.
     glowIntensity: 1.0,
+
+    // --- Aurora bristle definitions (ignored in glow stick mode) ---
+    // Generated at spawn time; fixed for the ribbon's lifetime. Five bristles
+    // share the same overall path but each has unique lateral offset, opacity,
+    // thickness, height, and phase — creating organic fibrous texture.
+    //
+    // Why these are fixed at spawn (not randomized per frame):
+    //   If offsets changed every frame the texture would shimmer randomly.
+    //   Fixed values mean each ribbon has a stable, recognizable character
+    //   that slowly evolves as the sine waves animate over time.
+    //
+    // Gap texture emerges naturally from xOffset + thicknessScale differences:
+    //   A bristle with xOffset +0.3 (shifted right) and thicknessScale 0.5
+    //   (half width) will leave a visible gap on its left. The blur on the
+    //   glow canvas softens these gaps into luminous transitions, not hard edges.
+    //
+    // heightScale — creates a ragged top edge (0.88–1.0 of full ribbon height):
+    //   Real aurora rays don't all reach the same altitude. Slight variation
+    //   in max height makes the ribbon look atmospheric rather than rectangular.
+    //
+    // isBright — first 2 bristles render on coreCtx (sharp, thin, near-white),
+    //   last 3 render on glowCtx (solid color fill, receives CSS blur).
+    bristles: Array.from({ length: 5 }, (_, i) => ({
+      xOffset:        (Math.random() - 0.5) * 0.7,  // lateral offset as fraction of full ribbon width
+      opacityScale:   0.55 + Math.random() * 0.45,   // 0.55–1.0 relative opacity
+      thicknessScale: 0.50 + Math.random() * 0.55,   // 0.5–1.05 relative width
+      heightScale:    0.88 + Math.random() * 0.12,   // 0.88–1.0 of full ribbon height
+      phaseOffset:    (Math.random() - 0.5) * 0.4,   // small phase variation so bristles don't sync
+      isBright:       i < 2,  // first 2 = sharp core bristles; last 3 = blurred glow bristles
+    })),
   };
 }
 
