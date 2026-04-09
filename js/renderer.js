@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { audioData, lerp } from './audio.js';
-import { getProfileColor, activeProfile } from './profiles.js';
+import { getProfileColor, getAuroraColor, activeProfile } from './profiles.js';
 import { renderMode, showNoteNames } from './ui.js';
 import { ribbons } from './ribbons.js';
 
@@ -299,7 +299,9 @@ function drawNoteLabel(ribbon) {
 function drawRibbonAurora(ribbon, time) {
   if (ribbon.opacity < 0.005) return;
 
-  const { h, s, l } = ribbon.hsl;
+  // getAuroraColor forces vivid saturation/lightness regardless of profile values.
+  // Profile hue is always preserved — it carries the chromesthesia identity.
+  const { h, s, l } = getAuroraColor(ribbon.pitchClass);
 
   // --- Build left and right edge arrays (bottom → top) ---
   // One point every 4 canvas pixels — finer resolution than before to capture
@@ -406,95 +408,101 @@ function drawRibbonAurora(ribbon, time) {
     if (pri) { glowH = pri.hsl.h; glowS = pri.hsl.s; glowL = pri.hsl.l; }
   }
 
-  // Ribbon midpoint values — used to anchor horizontal gradients.
-  // Horizontal gradients are straight bands; the polygon clip defines the shape.
+  // --- Gradient anchor ---
+  // midCx: horizontal center at the ribbon midpoint, for gradient positioning.
+  // avgThick: mean coreHalfWidth across all points — drives gradient sizing and
+  //           the dynamic polygon multiplier calculation below.
   const midIdx  = Math.floor(leftEdge.length / 2);
   const midCx   = (leftEdge[midIdx].x + rightEdge[midIdx].x) / 2;
-  const midHalf = leftEdge[midIdx].coreHalfWidth;
+  const avgThick = leftEdge.reduce((sum, pt) => sum + pt.coreHalfWidth, 0) / leftEdge.length;
 
-  // Global amplitude pulse — makes the aurora visibly swell and dim with the
-  // music. Applied to passes 1 and 2 via globalAlpha; pass 3 uses its own
-  // amplitude formula so the core can pulse independently and more intensely.
+  // --- Thickness-responsive glow multipliers ---
+  // thicknessFactor: 1.0 when avgThick equals base width; smaller when thin.
+  // Thin ribbon → large multiplier (tight, intense glow relative to ribbon width).
+  // Wide ribbon → smaller multiplier (soft, broad glow that doesn't overwhelm).
+  const thicknessFactor = Math.max(0.3, Math.min(1.0,
+    avgThick / (canvas.width * 0.032)   // normalize: 1.0 = base ribbon width
+  ));
+
+  const hazeMultiplier = 10 - thicknessFactor * 4;   // range 6–10
+  const glowMultiplier =  5 - thicknessFactor * 2;   // range 3–5
+  // Core multiplier stays 1.0 always — the core IS the ribbon width
+
+  // --- Composite opacity ---
+  // Baked into all gradient stop alphas so ctx.globalAlpha stays 1.0 per pass.
+  // Includes: lifecycle fade × musical role intensity × amplitude pulse.
+  // Clamped to 1.0 — dynamicOpacity can exceed 1.0 at high amplitudes.
   const dynamicOpacity = 0.45 + audioData.amplitude * 0.75;
-
-  // Composite opacity used to bake ribbon lifecycle into gradient stop alphas.
-  const opacity = ribbon.opacity;
+  const opacity = Math.min(1.0, ribbon.opacity * (ribbon.glowIntensity ?? 1.0) * dynamicOpacity);
 
   ctx.save();
 
   // -----------------------------------------------------------------------
   // PASS 1 — Wide atmospheric haze
-  // Wide polygon (×6 core width). Horizontal gradient, ribbon color only.
-  // Exponential falloff: peaks close to the left edge of the haze span,
-  // dropping rapidly outward — dense luminous atmosphere tight to the core.
-  // 'screen' blend adds an ambient tint to the sky behind the ribbon.
+  // Wide polygon (hazeMultiplier, 6–10× core). Horizontal gradient, ribbon color.
+  // Exponential falloff: dense luminous atmosphere tight to the core edge.
+  // Thin ribbons get a proportionally wider haze; wide fans get a softer one.
+  // Max stop alpha 0.07 × opacity — sky always visible through this layer.
+  // 'screen' blend adds ambient tint to the sky behind the ribbon.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = dynamicOpacity * ribbon.opacity;
+  ctx.globalAlpha = 1.0;
 
-  // Horizontal gradient spanning the full ×6 haze polygon half-width each side.
-  const hazeSpan = midHalf * 6;
+  const hazeSpan = avgThick * hazeMultiplier;
   const hazeGrad = ctx.createLinearGradient(midCx - hazeSpan, 0, midCx + hazeSpan, 0);
   hazeGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  hazeGrad.addColorStop(0.12, `hsla(${h}, ${s}%, ${l}%, ${0.10 * opacity})`);
-  hazeGrad.addColorStop(0.22, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
-  hazeGrad.addColorStop(0.38, `hsla(${h}, ${s}%, ${l}%, ${0.02 * opacity})`);
+  hazeGrad.addColorStop(0.12, `hsla(${h}, ${s}%, ${l}%, ${0.07  * opacity})`);
+  hazeGrad.addColorStop(0.22, `hsla(${h}, ${s}%, ${l}%, ${0.04  * opacity})`);
+  hazeGrad.addColorStop(0.38, `hsla(${h}, ${s}%, ${l}%, ${0.015 * opacity})`);
   hazeGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = hazeGrad;
-  buildPolygonPath(leftEdge, rightEdge, 6);
+  buildPolygonPath(leftEdge, rightEdge, hazeMultiplier);
   ctx.fill();
 
   // -----------------------------------------------------------------------
   // PASS 2 — Main glow body
-  // Moderate polygon (×3.5 core width). Horizontal gradient, ribbon color only.
-  // Exponential falloff: peaks very close to the core, drops steeply outward —
-  // most glow energy is packed within the innermost fraction of the glow span.
-  // l+6 / l+3 at the inner stops push brightness toward the white core.
-  // 'screen' blend adds the glow luminosity on top of the haze layer.
+  // Moderate polygon (glowMultiplier, 3–5× core). Horizontal gradient.
+  // Exponential falloff: most energy packed in the innermost fraction of span.
+  // l+6 / l+3 inner stops push brightness toward the white core.
+  // Thin ribbons get a proportionally wider, more concentrated glow.
+  // Max stop alpha 0.42 × opacity — sky visible through this layer.
+  // 'screen' blend adds glow luminosity on top of the haze layer.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = dynamicOpacity * ribbon.opacity;
+  ctx.globalAlpha = 1.0;
 
-  // Gradient span matches the expanded polygon half-width at the midpoint.
-  const glowSpan = midHalf * 3.5;
+  const glowSpan = avgThick * glowMultiplier;
   const glowGrad = ctx.createLinearGradient(midCx - glowSpan, 0, midCx + glowSpan, 0);
   glowGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
-  glowGrad.addColorStop(0.06, `hsla(${h}, ${s}%, ${l + 6}%, ${0.70 * opacity})`);
-  glowGrad.addColorStop(0.15, `hsla(${h}, ${s}%, ${l + 3}%, ${0.42 * opacity})`);
-  glowGrad.addColorStop(0.28, `hsla(${h}, ${s}%, ${l}%,     ${0.16 * opacity})`);
-  glowGrad.addColorStop(0.45, `hsla(${h}, ${s}%, ${l}%,     ${0.05 * opacity})`);
+  glowGrad.addColorStop(0.06, `hsla(${h}, ${s}%, ${l + 6}%, ${0.42 * opacity})`);
+  glowGrad.addColorStop(0.15, `hsla(${h}, ${s}%, ${l + 3}%, ${0.24 * opacity})`);
+  glowGrad.addColorStop(0.28, `hsla(${h}, ${s}%, ${l}%,     ${0.10 * opacity})`);
+  glowGrad.addColorStop(0.45, `hsla(${h}, ${s}%, ${l}%,     ${0.03 * opacity})`);
   glowGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = glowGrad;
-  buildPolygonPath(leftEdge, rightEdge, 3.5);
+  buildPolygonPath(leftEdge, rightEdge, glowMultiplier);
   ctx.fill();
 
   // -----------------------------------------------------------------------
   // PASS 3 — Bright solid core
-  // Exact core polygon (×1.0). Horizontal gradient with a near-white centre:
-  // the ribbon's hue with reduced saturation and raised lightness so the spine
-  // reads as luminous. 'source-over' preserves the vivid HSL color rather than
-  // washing it out with additive blending.
-  //
-  // globalAlpha is driven purely by amplitude here (0.5–1.2, clamped to 1.0)
-  // so the core pulses visibly with musical dynamics independent of the ribbon's
-  // lifecycle opacity. Edges use ribbon.opacity × 0.55 for a soft falloff.
+  // Exact core polygon (×1.0). Horizontal gradient with a near-white centre.
+  // 'source-over' preserves vivid HSL color; all alpha baked in via opacity
+  // so sky and stars remain visible even through the brightest core.
+  // Max stop alpha 0.82 × opacity — center stop, hottest point.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = Math.min(1.0, 0.5 + audioData.amplitude * 0.7);
+  ctx.globalAlpha = 1.0;
 
-  // Near-white: reduce saturation, push lightness toward 90. Hue is retained
-  // so it reads as tinted-bright, not neutral-white.
-  const coreS = Math.max(s - 15, 5);
-  const coreL = Math.min(l + 25, 90);
-
-  const coreSpan = midHalf * 1.0;
+  const coreSpan = avgThick * 1.0;
   const coreGrad = ctx.createLinearGradient(midCx - coreSpan, 0, midCx + coreSpan, 0);
-  coreGrad.addColorStop(0.0, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.55).toFixed(3)})`);
-  coreGrad.addColorStop(0.5, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.98).toFixed(3)})`);
-  coreGrad.addColorStop(1.0, `hsla(${h},${coreS}%,${coreL}%,${(ribbon.opacity * 0.55).toFixed(3)})`);
+  coreGrad.addColorStop(0.0, `hsla(${h}, ${s}%,      ${l}%,      ${0.35 * opacity})`);
+  coreGrad.addColorStop(0.3, `hsla(${h}, ${s - 15}%, ${l + 14}%, ${0.65 * opacity})`);
+  coreGrad.addColorStop(0.5, `hsla(0,    0%,          97%,        ${0.82 * opacity})`);
+  coreGrad.addColorStop(0.7, `hsla(${h}, ${s - 15}%, ${l + 14}%, ${0.65 * opacity})`);
+  coreGrad.addColorStop(1.0, `hsla(${h}, ${s}%,      ${l}%,      ${0.35 * opacity})`);
   ctx.fillStyle = coreGrad;
   buildPolygonPath(leftEdge, rightEdge, 1.0);
   ctx.fill();

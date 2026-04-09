@@ -77,3 +77,42 @@ export function getProfileColor(pitchClass) {
     l: Math.min(74, l),
   };
 }
+
+
+// ================================
+// AURORA COLOR PIPELINE
+//
+// Aurora-specific variant of getProfileColor with more aggressive lightness
+// and saturation forcing. Aurora ribbons render against a dark sky with screen
+// blending — they need higher base values than glow sticks to avoid reading
+// as muddy or near-invisible at quiet/mid-volume passages.
+//
+// Profile hue is always preserved — it carries the chromesthesia identity.
+// Saturation and lightness are rendering parameters, not scientific ones.
+//
+// Parameters:
+//   pitchClass — integer 0–11 (0 = C, 11 = B)
+//
+// Returns: { h, s, l }
+// ================================
+
+export function getAuroraColor(pitchClass) {
+  const base = activeProfile.pitchColors[pitchClass];
+  const h = base.h;
+
+  // Force minimum saturation of 82% — profile values can be as low as 22%
+  // which reads as near-grey on a dark background
+  const s = Math.max(82, base.s) + audioData.amplitude * 12;
+
+  // Force minimum lightness of 58% — below this, colors read as dark on
+  // dark background even at reasonable opacity values
+  const l = Math.max(58, base.l)
+            + audioData.amplitude * 10
+            + audioData.beatIntensity * 8;
+
+  return {
+    h,
+    s: Math.min(96, s),
+    l: Math.min(78, l),
+  };
+}
