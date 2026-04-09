@@ -382,36 +382,41 @@ function drawRibbonAurora(ribbon, time) {
   // amplitude formula so the core can pulse independently and more intensely.
   const dynamicOpacity = 0.45 + audioData.amplitude * 0.75;
 
+  // Composite opacity used to bake ribbon lifecycle into gradient stop alphas.
+  const opacity = ribbon.opacity;
+
   ctx.save();
 
   // -----------------------------------------------------------------------
-  // PASS 1 — Atmospheric bloom
-  // Wide polygon (×6 core width). Vertical gradient encodes both the origin
-  // fade and the secondary-pitch atmospheric color at 0.22 max opacity.
+  // PASS 1 — Wide atmospheric haze
+  // Wide polygon (×6 core width). Horizontal gradient, ribbon color only.
+  // Exponential falloff: peaks close to the left edge of the haze span,
+  // dropping rapidly outward — dense luminous atmosphere tight to the core.
   // 'screen' blend adds an ambient tint to the sky behind the ribbon.
-  // widthMultiplier reduced from 10→6 to keep the halo close to the ribbon.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'screen';
   ctx.globalAlpha = dynamicOpacity * ribbon.opacity;
 
-  // Vertical gradient: bottom→top. Opacity rises from 0 at the canvas floor
-  // to 0.22 at originFadeFrac, then holds — matching the origin fade geometry.
-  const bloomGrad = ctx.createLinearGradient(0, canvas.height, 0, 0);
-  bloomGrad.addColorStop(0.0,            `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-  bloomGrad.addColorStop(originFadeFrac, `hsla(${glowH},${glowS}%,${glowL}%,0.22)`);
-  bloomGrad.addColorStop(1.0,            `hsla(${glowH},${glowS}%,${glowL}%,0.22)`);
-  ctx.fillStyle = bloomGrad;
+  // Horizontal gradient spanning the full ×6 haze polygon half-width each side.
+  const hazeSpan = midHalf * 6;
+  const hazeGrad = ctx.createLinearGradient(midCx - hazeSpan, 0, midCx + hazeSpan, 0);
+  hazeGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  hazeGrad.addColorStop(0.12, `hsla(${h}, ${s}%, ${l}%, ${0.10 * opacity})`);
+  hazeGrad.addColorStop(0.22, `hsla(${h}, ${s}%, ${l}%, ${0.06 * opacity})`);
+  hazeGrad.addColorStop(0.38, `hsla(${h}, ${s}%, ${l}%, ${0.02 * opacity})`);
+  hazeGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  ctx.fillStyle = hazeGrad;
   buildPolygonPath(leftEdge, rightEdge, 6);
   ctx.fill();
 
   // -----------------------------------------------------------------------
-  // PASS 2 — Main ribbon glow
-  // Moderate polygon (×3.5 core width). Horizontal gradient from secondary
-  // color at the edges blending to primary color at the centre (Option D).
-  // Centre opacity 0.82 (down from 0.85) lets the sky show through slightly,
-  // reading as semi-transparent luminous gas rather than a solid painted shape.
-  // 'screen' blend adds the glow luminosity on top of the bloom layer.
+  // PASS 2 — Main glow body
+  // Moderate polygon (×3.5 core width). Horizontal gradient, ribbon color only.
+  // Exponential falloff: peaks very close to the core, drops steeply outward —
+  // most glow energy is packed within the innermost fraction of the glow span.
+  // l+6 / l+3 at the inner stops push brightness toward the white core.
+  // 'screen' blend adds the glow luminosity on top of the haze layer.
   // -----------------------------------------------------------------------
 
   ctx.globalCompositeOperation = 'screen';
@@ -420,11 +425,12 @@ function drawRibbonAurora(ribbon, time) {
   // Gradient span matches the expanded polygon half-width at the midpoint.
   const glowSpan = midHalf * 3.5;
   const glowGrad = ctx.createLinearGradient(midCx - glowSpan, 0, midCx + glowSpan, 0);
-  glowGrad.addColorStop(0.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
-  glowGrad.addColorStop(0.25, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
-  glowGrad.addColorStop(0.50, `hsla(${h},${s}%,${l}%,0.82)`);
-  glowGrad.addColorStop(0.75, `hsla(${glowH},${glowS}%,${glowL}%,0.4)`);
-  glowGrad.addColorStop(1.00, `hsla(${glowH},${glowS}%,${glowL}%,0)`);
+  glowGrad.addColorStop(0.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
+  glowGrad.addColorStop(0.06, `hsla(${h}, ${s}%, ${l + 6}%, ${0.70 * opacity})`);
+  glowGrad.addColorStop(0.15, `hsla(${h}, ${s}%, ${l + 3}%, ${0.42 * opacity})`);
+  glowGrad.addColorStop(0.28, `hsla(${h}, ${s}%, ${l}%,     ${0.16 * opacity})`);
+  glowGrad.addColorStop(0.45, `hsla(${h}, ${s}%, ${l}%,     ${0.05 * opacity})`);
+  glowGrad.addColorStop(1.0,  `hsla(${h}, ${s}%, ${l}%, 0.00)`);
   ctx.fillStyle = glowGrad;
   buildPolygonPath(leftEdge, rightEdge, 3.5);
   ctx.fill();
