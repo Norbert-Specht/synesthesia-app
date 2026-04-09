@@ -302,49 +302,88 @@ function drawRibbonAurora(ribbon, time) {
   const { h, s, l } = ribbon.hsl;
 
   // --- Build left and right edge arrays (bottom → top) ---
-  // One point every 6 canvas pixels — sufficient resolution for smooth polygon
-  // curvature; half the step count of the old fillRect approach.
-  const STEPS = Math.ceil(canvas.height / 6);
+  // One point every 4 canvas pixels — finer resolution than before to capture
+  // the sharp width transitions of brush stroke geometry without polygon faceting.
+  const STEPS = Math.ceil(canvas.height / 4);
   const leftEdge  = [];
   const rightEdge = [];
 
-  // originFadeHeight: the vertical span of the transparent-to-opaque fade
-  // at the base of the ribbon.
-  //   amplitude 0 → fade spans 80% of canvas height (ribbon barely rises)
-  //   amplitude 1 → fade spans 30% of canvas height (ribbon nearly full height)
-  const originFadeHeight = canvas.height * (0.80 - audioData.amplitude * 0.50);
-
   for (let i = 0; i <= STEPS; i++) {
-    const y        = canvas.height * (1 - i / STEPS);  // y=canvas.height at i=0 (bottom)
-    const progress = i / STEPS;
+    const y        = canvas.height * (1 - i / STEPS);
+    const progress = i / STEPS;   // 0 at bottom, 1 at top
 
-    // Dual-frequency lateral drift. xAmplitude at 1.8% of canvas width keeps
-    // ribbons reading as near-vertical curtains rather than diagonal sine strands.
+    // ── Trajectory ──────────────────────────────────────────────────────────
+    // Three components combine to give an organic, non-periodic path:
+    //   phase1: primary lateral curl (medium frequency)
+    //   phase2: secondary wobble (different frequency — avoids perfect repeat)
+    //   drift:  slow overall lean — breaks left/right symmetry of pure sine
+
     const phase1 = progress * Math.PI * 2 * ribbon.waveFreq1
                    + time * ribbon.driftSpeed + ribbon.timeOffset;
     const phase2 = progress * Math.PI * 2 * ribbon.waveFreq2
-                   + time * ribbon.driftSpeed * 0.6 + ribbon.timeOffset * 0.7;
+                   + time * ribbon.driftSpeed * 0.55 + ribbon.timeOffset * 0.7;
+    const drift  = Math.sin(
+                     progress * Math.PI * 0.6
+                     + time * 0.06
+                     + ribbon.timeOffset * 2.1
+                   ) * canvas.width * 0.032;
+
     const xAmplitude = canvas.width * 0.018;
     const cx = ribbon.xFraction * canvas.width
                + Math.sin(phase1) * xAmplitude
-               + Math.sin(phase2) * xAmplitude * ribbon.wobbleRatio;
+               + Math.sin(phase2) * xAmplitude * ribbon.wobbleRatio
+               + drift;
 
-    // Thickness noise: 4.5 sine cycles along the height create organic pinch
-    // points and swells in the ribbon's width. ±28% variation.
-    const thickNoise = 1 + Math.sin(progress * Math.PI * 4.5
-                       + time * 0.22 + ribbon.timeOffset) * 0.28;
+    // ── Brush stroke width ──────────────────────────────────────────────────
+    // Three layered noise frequencies combine into a single width multiplier:
+    //   slow:   large-scale shape — 1–2 wide fans across full ribbon height
+    //   medium: secondary billowing — adds internal variation to each fan
+    //   fast:   local edge texture — prevents edges feeling too smooth
+    //
+    // Weighted sum: slow dominates (0.65) so the drama reads at large scale.
+    // Combined ranges from -1 to +1:
+    //   near -1 → ribbon almost disappears (thread moment)
+    //   near +1 → ribbon fans dramatically wide
 
-    // coreHalfWidth: half the total core polygon width at this point.
-    // Scales with per-ribbon thickness multiplier and live amplitude.
-    const coreHalfWidth = canvas.width * 0.032 * thickNoise
-                          * ribbon.thickness
-                          * (0.7 + audioData.amplitude * 0.6);
+    const slow   = Math.sin(progress * Math.PI * 1.2
+                   + time * 0.07 + ribbon.timeOffset);
+    const medium = Math.sin(progress * Math.PI * 2.8
+                   + time * 0.13 + ribbon.timeOffset * 1.3);
+    const fast   = Math.sin(progress * Math.PI * 6.1
+                   + time * 0.21 + ribbon.timeOffset * 0.7);
 
-    // Origin fade: transparent at the canvas bottom, reaching full opacity
-    // at originFadeHeight above it.
+    const combined = slow * 0.65 + medium * 0.25 + fast * 0.10;
+
+    // ── Amplitude modulation ────────────────────────────────────────────────
+    // Loud music fans the ribbon wide. Quiet music narrows it to a thread.
+    // amplitudeFan: 0.0 at silence → 1.0 at full volume
+    // This is the primary musical connection for the aurora shape.
+    //
+    // amplitudeFan scales the RANGE of the brush stroke variation:
+    //   At low amplitude: multiplier stays near 0.5–0.8 (always somewhat narrow)
+    //   At high amplitude: multiplier can reach 0.05–2.6 (full dramatic range)
+
+    const amplitudeFan = audioData.amplitude;
+    const baseWidth    = canvas.width * 0.032 * ribbon.thickness;
+
+    // thickMultiplier: minimum 0.05 so ribbon never fully disappears (Option A)
+    // Maximum driven by amplitude — louder = wider possible fans
+    const maxExpansion    = 0.8 + amplitudeFan * 1.6;   // 0.8→2.4 range with amplitude
+    const thickMultiplier = Math.max(0.05, 1.0 + combined * maxExpansion);
+    const coreHalfWidth   = baseWidth * thickMultiplier;
+
+    // ── Opacity variation along ribbon length ───────────────────────────────
+    // The ribbon is more opaque where it's wide, more transparent where thin.
+    // This mirrors how a brush stroke behaves — more ink where pressure is high.
+    // Opacity also modulated by the slow noise component only (large scale).
+
+    const lengthOpacity  = Math.max(0.08, 0.6 + slow * 0.55);
+
+    // Origin fade — ribbon appears to rise from horizon on loud passages
+    const originFadeH    = canvas.height * (0.80 - audioData.amplitude * 0.50);
     const distFromBottom = canvas.height - y;
-    const originOpacity  = Math.min(1, distFromBottom / Math.max(1, originFadeHeight));
-    const pointOpacity   = ribbon.opacity * originOpacity;
+    const originOpacity  = Math.min(1, distFromBottom / Math.max(1, originFadeH));
+    const pointOpacity   = ribbon.opacity * lengthOpacity * originOpacity;
 
     leftEdge.push({ x: cx - coreHalfWidth, y, pointOpacity, coreHalfWidth });
     rightEdge.push({ x: cx + coreHalfWidth, y, pointOpacity, coreHalfWidth });
@@ -366,10 +405,6 @@ function drawRibbonAurora(ribbon, time) {
     );
     if (pri) { glowH = pri.hsl.h; glowS = pri.hsl.s; glowL = pri.hsl.l; }
   }
-
-  // originFadeFrac: gradient stop position where the origin fade reaches full
-  // opacity (expressed as 0.0 = canvas bottom, 1.0 = canvas top).
-  const originFadeFrac = Math.min(0.95, originFadeHeight / canvas.height);
 
   // Ribbon midpoint values — used to anchor horizontal gradients.
   // Horizontal gradients are straight bands; the polygon clip defines the shape.
