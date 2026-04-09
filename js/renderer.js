@@ -10,7 +10,7 @@
 
 import { audioData, lerp } from './audio.js';
 import { getProfileColor, activeProfile } from './profiles.js';
-import { renderMode } from './ui.js';
+import { renderMode, showNoteNames } from './ui.js';
 import { ribbons } from './ribbons.js';
 
 
@@ -247,6 +247,55 @@ export function drawRibbon(ribbon, time) {
 //   time   — the shared animation time counter
 // ================================
 
+
+// ================================
+// RIBBON SYSTEM — NOTE LABEL UTILITY
+//
+// Draws a pitch class name (C, C#, D …) at the bottom of a ribbon or glow
+// stick, centered on ribbon.xFraction * canvas.width. Used by all render
+// modes — call drawNoteLabel(ribbon) at the end of any draw function.
+//
+// Position is anchored to xFraction (the stable spawn x), not to the
+// sway-adjusted cx used in aurora geometry, so labels don't oscillate.
+//
+// Early-returns when showNoteNames is false, so call sites need no guard.
+//
+// Parameters:
+//   ribbon — any ribbon or glow stick object with pitchClass, xFraction,
+//            and opacity properties
+// ================================
+
+function drawNoteLabel(ribbon) {
+  if (!showNoteNames) return;
+
+  const cx     = ribbon.xFraction * canvas.width;
+  const label  = PITCH_NAMES[ribbon.pitchClass];
+  const labelW = 52 + 10 * 2;   // labelSize + labelPad * 2
+  const labelH = 52 + 10 * 2;
+  const labelX = cx - labelW / 2;
+  // 72px = controls bar height, 16px = gap above bar
+  const labelY = canvas.height - labelH - 72 - 16;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // Dark background square — contrast behind white text
+  ctx.globalAlpha = ribbon.opacity * 0.82;
+  ctx.fillStyle   = 'rgba(6, 8, 16, 0.88)';
+  ctx.fillRect(labelX, labelY, labelW, labelH);
+
+  // Note name text
+  ctx.globalAlpha  = ribbon.opacity;
+  ctx.fillStyle    = '#ffffff';
+  ctx.font         = LABEL_FONT;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, cx, labelY + labelH / 2);
+
+  ctx.restore();
+}
+
+
 function drawRibbonAurora(ribbon, time) {
   if (ribbon.opacity < 0.005) return;
 
@@ -411,6 +460,8 @@ function drawRibbonAurora(ribbon, time) {
 
   ctx.globalAlpha = 1.0;
   ctx.restore();
+
+  drawNoteLabel(ribbon);
 }
 
 
@@ -564,41 +615,8 @@ function drawRibbonGlowstick(ribbon, time) {
   ctx.fillStyle = coreGrad;
   ctx.fillRect(cx - coreHW, top, coreHW * 2, bottom - top);
 
-  // -----------------------------------------------------------------------
-  // NOTE NAME LABEL — diagnostic display for pitch verification
-  // Shows pitch class name (C, C#, D etc.) at the bottom of each glow stick.
-  // Remove this block once pitch detection is verified against known recordings.
-  // -----------------------------------------------------------------------
-
-  const label = PITCH_NAMES[ribbon.pitchClass];
-
-  const labelSize = 52;
-  const labelPad  = 10;
-  const labelW    = labelSize + labelPad * 2;
-  const labelH    = labelSize + labelPad * 2;
-  const labelX    = cx - labelW / 2;
-  // 72px = controls bar height, 16px = gap above bar, 12px = internal padding
-  const labelY    = canvas.height - labelH - 72 - 16;
-
-  // Dark background square — gives the white text contrast against the canvas.
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = ribbon.opacity * 0.82;
-  ctx.fillStyle   = 'rgba(6, 8, 16, 0.88)';
-  ctx.fillRect(labelX, labelY, labelW, labelH);
-
-  // Note name text.
-  ctx.globalAlpha  = ribbon.opacity;
-  ctx.fillStyle    = '#ffffff';
-  ctx.font         = LABEL_FONT;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, cx, labelY + labelH / 2);
-
-  // Reset text and composite state.
-  ctx.globalAlpha  = 1.0;
-  ctx.textAlign    = 'left';
-  ctx.textBaseline = 'alphabetic';
-
   ctx.globalCompositeOperation = 'source-over';
   ctx.restore();
+
+  drawNoteLabel(ribbon);
 }

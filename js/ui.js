@@ -2,52 +2,97 @@
 // SYNESTHESIA APP — ui.js
 // =============================================================================
 //
-// Render mode state and the mode switch button event listeners.
+// Settings sidebar, render mode state, and display toggles.
 //
-// renderMode is exported as a live binding — any module that imports it will
-// always read the current value when the variable is accessed, so no getter
-// function is needed.
+// Owns:
+//   renderMode    — 'aurora' | 'glowstick' — which renderer drawRibbon() uses
+//   showNoteNames — boolean — whether note name labels are drawn each frame
+//   sidebar open/close state and all settings event listeners
+//
+// All future settings should be added here as exported state variables
+// with corresponding UI controls wired up below.
+//
+// renderMode and showNoteNames are exported as live bindings — any module
+// that imports them always reads the current value without needing a getter.
 // =============================================================================
 
 
 // ================================
-// RENDER MODE
-//
-// Controls which draw function is used for each ribbon each frame.
-// Two modes exist as permanent user-facing features (switched via the pill UI
-// in the top right corner — see index.html #mode-switch, style.css section 7):
-//
-//   'aurora'    — broad translucent ribbon curtains. drawRibbonAurora().
-//                 Three polygon passes: wide haze, main glow body, bright core.
-//                 source-over compositing. Sky visible between ribbons.
-//
-//   'glowstick' — thin neon sticks with a wide chasing blur. drawRibbonGlowstick().
-//                 Three polygon passes: wide outer glow, inner intense glow, hot core.
-//                 Asymmetric appear/fade timing — fast in, slow out.
-//
-// Both modes share the same audio analysis pipeline, ribbon lifecycle system,
-// profile color lookup, and origin fade geometry. Only the draw function differs.
-//
-// To add a future mode: add a new value here, add a new drawRibbon<Name>() function,
-// add a branch in drawRibbon(), and add a button to #mode-switch in index.html.
+// EXPORTED STATE
 // ================================
 
-// 'aurora' | 'glowstick' — read each frame by drawRibbon() to route to the
-// correct rendering function. Default is aurora on page load.
-export let renderMode = 'aurora';
+// Which renderer drawRibbon() routes to each frame.
+// 'aurora' — broad translucent curtains. 'glowstick' — thin neon sticks.
+export let renderMode    = 'aurora';
 
-// Mode switch button event listeners.
-// Clicking a button updates renderMode and swaps the .active class between
-// the two buttons. The .active class provides the visual selected state
-// (cyan tinted fill) — see style.css section 7 for the styling.
-document.getElementById('mode-aurora').addEventListener('click', () => {
-  renderMode = 'aurora';
-  document.getElementById('mode-aurora').classList.add('active');
-  document.getElementById('mode-glow').classList.remove('active');
+// Whether note name labels (C, C#, D …) are drawn at the bottom of each
+// ribbon/stick. Off by default — the visualization is primary.
+export let showNoteNames = false;
+
+
+// ================================
+// DOM REFERENCES
+// ================================
+
+const settingsBtn     = document.getElementById('settings-btn');
+const settingsSidebar = document.getElementById('settings-sidebar');
+const settingsClose   = document.getElementById('settings-close');
+const noteNamesToggle = document.getElementById('note-names-toggle');
+const pillBtns        = document.querySelectorAll('.settings-pill');
+
+
+// ================================
+// SIDEBAR — OPEN / CLOSE
+//
+// openSidebar / closeSidebar manage both the visual state (.open class
+// drives the CSS slide transition) and the accessibility attributes
+// (aria-hidden on the sidebar, aria-expanded on the trigger button).
+// ================================
+
+function openSidebar() {
+  settingsSidebar.classList.add('open');
+  settingsSidebar.setAttribute('aria-hidden', 'false');
+  settingsBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeSidebar() {
+  settingsSidebar.classList.remove('open');
+  settingsSidebar.setAttribute('aria-hidden', 'true');
+  settingsBtn.setAttribute('aria-expanded', 'false');
+}
+
+// Settings button toggles the sidebar.
+settingsBtn.addEventListener('click', () => {
+  settingsSidebar.classList.contains('open') ? closeSidebar() : openSidebar();
 });
 
-document.getElementById('mode-glow').addEventListener('click', () => {
-  renderMode = 'glowstick';
-  document.getElementById('mode-glow').classList.add('active');
-  document.getElementById('mode-aurora').classList.remove('active');
+// Close button always closes.
+settingsClose.addEventListener('click', closeSidebar);
+
+
+// ================================
+// VISUALIZATION MODE — PILL BUTTONS
+//
+// Clicking a pill updates renderMode and transfers the .active class to
+// the clicked button. data-mode attribute maps directly to renderMode values.
+// ================================
+
+pillBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    renderMode = btn.dataset.mode;
+    pillBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+
+// ================================
+// NOTE NAMES TOGGLE
+//
+// Syncs showNoteNames with the checkbox state. renderer.js reads
+// showNoteNames in drawNoteLabel() each frame — no additional wiring needed.
+// ================================
+
+noteNamesToggle.addEventListener('change', () => {
+  showNoteNames = noteNamesToggle.checked;
 });

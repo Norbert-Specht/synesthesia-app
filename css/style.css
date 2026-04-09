@@ -398,64 +398,212 @@ html, body {
 
 
 /* ================================
-   7. RENDER MODE SWITCH
+   7. SETTINGS BUTTON
    ================================
-   Pill-shaped segmented control, fixed in the top right corner.
-   Always visible and active — this is a permanent user-facing feature,
-   not a developer tool. z-index: 30 sits above the controls bar (20)
-   and the landing overlay (10).
-
-   The pill container uses a dark frosted-glass treatment matching the
-   controls bar aesthetic. Buttons inside are borderless; the .active
-   class adds a cyan-tinted fill to signal the current mode.
+   Fixed gear icon in the top right corner. Always visible — opens the
+   settings sidebar. z-index: 30 sits above controls (20) and landing (10).
    ================================ */
 
-#mode-switch {
+#settings-btn {
   position: fixed;
-  top: 24px;
-  right: 28px;
+  top: 20px;
+  right: 24px;
   z-index: 30;
-
-  /* Pill-shaped frosted container — matches the controls bar glass treatment */
-  display: flex;
-  gap: 0;
-  padding: 3px;
-  border-radius: 999px;
-  background: rgba(6, 8, 16, 0.62);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);   /* Safari prefix required */
-  /* Hairline border at same opacity as controls bar top border */
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-/* Individual mode buttons — borderless inside the pill container */
-.mode-btn {
-  font-family: var(--font);
-  font-size: 0.78rem;
-  font-weight: 400;
-  padding: 6px 18px;
-  border-radius: 999px;
+  background: none;
   border: none;
-  cursor: pointer;
-  /* Smooth transition for the active/inactive state change */
-  transition: all 0.25s ease;
-
-  /* Inactive state: transparent background, muted secondary text */
-  background: transparent;
+  padding: 8px;
+  border-radius: 50%;
   color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
 }
 
-/* Hover on inactive button — brightens text to signal interactivity
-   without showing the full active treatment prematurely */
-.mode-btn:hover:not(.active) {
+#settings-btn:hover {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+
+/* ================================
+   8. SETTINGS SIDEBAR
+   ================================
+   Slides in from the right edge. Hidden off-screen by default via
+   translateX(100%); the .open class added by ui.js slides it into view.
+   z-index: 40 sits above the settings button so the sidebar overlays it.
+   Dark frosted-glass treatment matches the controls bar aesthetic.
+   ================================ */
+
+#settings-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 360px;
+  z-index: 40;
+  background: rgba(6, 8, 16, 0.82);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);   /* Safari prefix required */
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  /* Hidden off-screen to the right by default */
+  transform: translateX(100%);
+  transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Slide into view when ui.js adds .open */
+#settings-sidebar.open {
+  transform: translateX(0);
+}
+
+/* Sidebar header: title left, close button right */
+#settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+#settings-title {
+  font-family: var(--font);
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+}
+
+#settings-close {
+  background: none;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#settings-close:hover {
   color: var(--text-primary);
 }
 
-/* Active state — cyan-tinted fill and accent text colour.
-   box-shadow adds a soft outer glow matching the aurora accent palette.
-   0.15 opacity fill is subtle — enough to read as selected, not garish. */
-.mode-btn.active {
-  background: rgba(0, 229, 255, 0.15);
+
+/* ================================
+   9. SETTINGS CONTROLS
+   ================================
+   Section wrappers, section labels, visualization pills, and toggle switch.
+   All controls share the same spacing and type treatment.
+   ================================ */
+
+/* Each settings group — consistent padding, no bottom padding (next
+   section provides the visual gap above it) */
+.settings-section {
+  padding: 28px 24px 0;
+}
+
+/* All-caps label above each section */
+.settings-section-label {
+  font-family: var(--font);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+/* Visualization mode pills — horizontal row of options */
+.settings-pill-group {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-pill {
+  font-family: var(--font);
+  font-size: 0.82rem;
+  font-weight: 400;
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.settings-pill:hover:not(.active) {
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Active pill: cyan-tinted treatment matching the old mode-btn.active */
+.settings-pill.active {
+  background: rgba(0, 229, 255, 0.12);
   color: var(--accent);
-  box-shadow: 0 0 12px rgba(0, 229, 255, 0.18);
+  border-color: rgba(0, 229, 255, 0.35);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.15);
+}
+
+/* Toggle switch — label wraps all parts so the whole row is clickable */
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+/* Hide the native checkbox — custom track/thumb render in its place */
+.settings-toggle input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+/* The pill-shaped track */
+.settings-toggle-track {
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.22s ease, border-color 0.22s ease;
+}
+
+/* Track color when checked */
+.settings-toggle input:checked + .settings-toggle-track {
+  background: rgba(0, 229, 255, 0.25);
+  border-color: rgba(0, 229, 255, 0.5);
+}
+
+/* Circular thumb inside the track */
+.settings-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 0.22s ease, background 0.22s ease;
+}
+
+/* Slide thumb right and turn accent when checked */
+.settings-toggle input:checked ~ .settings-toggle-track .settings-toggle-thumb {
+  transform: translateX(18px);
+  background: var(--accent);
+}
+
+/* Text label to the right of the toggle track */
+.settings-toggle-label {
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--text-primary);
 }
