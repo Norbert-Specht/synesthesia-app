@@ -15,6 +15,22 @@ import { ribbons } from './ribbons.js';
 
 
 // ================================
+// MODULE-LEVEL RENDERING CONSTANTS
+//
+// Computed once at module load. Avoids recreating strings or arrays
+// inside per-frame, per-ribbon draw calls.
+// ================================
+
+// Pitch class names for the diagnostic note label in drawRibbonGlowstick().
+// Index 0 = C, index 11 = B — matches Meyda's chroma vector order.
+const PITCH_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+// Font string for the diagnostic note label. Setting ctx.font is expensive
+// (triggers a font lookup); declaring it once here avoids the cost per ribbon per frame.
+const LABEL_FONT = `400 52px 'Plus Jakarta Sans', system-ui, sans-serif`;
+
+
+// ================================
 // CANVAS SETUP
 // ================================
 
@@ -554,7 +570,6 @@ function drawRibbonGlowstick(ribbon, time) {
   // Remove this block once pitch detection is verified against known recordings.
   // -----------------------------------------------------------------------
 
-  const PITCH_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const label = PITCH_NAMES[ribbon.pitchClass];
 
   const labelSize = 52;
@@ -574,7 +589,7 @@ function drawRibbonGlowstick(ribbon, time) {
   // Note name text.
   ctx.globalAlpha  = ribbon.opacity;
   ctx.fillStyle    = '#ffffff';
-  ctx.font         = `400 ${labelSize}px 'Plus Jakarta Sans', system-ui, sans-serif`;
+  ctx.font         = LABEL_FONT;
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, cx, labelY + labelH / 2);

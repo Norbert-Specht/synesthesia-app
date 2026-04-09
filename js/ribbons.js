@@ -35,11 +35,14 @@ const MAX_RIBBONS = 3;
 const MAX_GLOWSTICKS = 9;
 
 // Glow stick opacity lerp rates — asymmetric timing is the defining character
-// of the glow stick mode: fast snappy appearance vs slow atmospheric fade.
+// of the glow stick mode: fast snappy appearance vs gradual atmospheric fade.
 //   rising: 0.15  — nearly instant (about 4–5 frames to 50%); energy arrives fast
-//   fading: 0.022 — very slow (about 30 frames to 50%); glow lingers after core fades
+//   fading: 0.045 — moderate fade (~15 frames to 50%); keeps up with faster pitch
+//           transitions without leaving a screen full of ghost sticks. Previous
+//           value 0.022 was tuned for rare transitions — too slow now that
+//           debounce fires at 160ms for strong notes.
 const GLOWSTICK_RISE_RATE = 0.15;
-const GLOWSTICK_FADE_RATE = 0.022;
+const GLOWSTICK_FADE_RATE = 0.045;
 
 
 // ================================
@@ -427,8 +430,8 @@ export function updateRibbonLifecycle() {
   // Moderate confidence (0.35–0.65) waits 180ms before committing.
   // Below 0.35 the pitch is noise — never trigger a transition.
   const dominantEnergy = audioData.chroma[audioData.dominantPitch];
-  const debounceMs = dominantEnergy > 0.65 ? 80
-                   : dominantEnergy > 0.35 ? 180
+  const debounceMs = dominantEnergy > 0.65 ? 160
+                   : dominantEnergy > 0.35 ? 280
                    : Infinity;   // below threshold — ignore
 
   if (newDominant !== dominantPitchCandidate) {
@@ -538,8 +541,8 @@ export function updateGlowstickLifecycle() {
   // Same energy thresholds — strong notes respond at 80ms, moderate at 180ms,
   // below 0.35 energy the pitch is treated as noise and ignored.
   const dominantEnergy = audioData.chroma[audioData.dominantPitch];
-  const debounceMs = dominantEnergy > 0.65 ? 80
-                   : dominantEnergy > 0.35 ? 180
+  const debounceMs = dominantEnergy > 0.65 ? 160
+                   : dominantEnergy > 0.35 ? 280
                    : Infinity;   // below threshold — ignore
 
   if (newDominant !== glowstickPitchCandidate) {
