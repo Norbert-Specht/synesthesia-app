@@ -13,7 +13,7 @@
 // while the new mode's pool starts fresh. The pools never share state.
 // =============================================================================
 
-import { audioData, lerp } from './audio.js';
+import { audioData, lerp, getBPM } from './audio.js';
 import { getProfileColor } from './profiles.js';
 import { renderMode } from './ui.js';
 
@@ -618,6 +618,28 @@ export function updateGlowstickLifecycle() {
 }
 
 
+// ─── getAnimationSpeedFactor ──────────────────────────────────────────────
+// Maps estimated BPM to an animation speed multiplier using a gentle curve.
+//
+// Formula: 0.5 + ((BPM - 60) / 120) ^ 0.7
+// This produces a curve that is:
+//   - Gentler at low BPM (small changes feel significant)
+//   - Flatter at high BPM (differences less perceptible)
+//   - Always within a safe range for lerp rates
+//
+// Output range: ~0.50 (60 BPM) → ~1.14 (180 BPM)
+// Clamped to 0.4–1.3 to prevent lerp rates going out of safe bounds.
+// ─────────────────────────────────────────────────────────────────────────
+
+function getAnimationSpeedFactor() {
+  const bpm        = getBPM();
+  const normalized = Math.max(0, (bpm - 60) / 120);   // 0.0 at 60 BPM, 1.0 at 180 BPM
+  const curved     = Math.pow(normalized, 0.7);        // gentle curve — compresses high end
+  const factor     = 0.5 + curved;
+  return Math.min(1.3, Math.max(0.4, factor));
+}
+
+
 // ================================
 // RIBBON SYSTEM — OPACITY ANIMATION
 //
@@ -626,17 +648,43 @@ export function updateGlowstickLifecycle() {
 // the transition is complete. Also refreshes each ribbon's HSL color from
 // the pipeline so live amplitude / brightness / beat changes are visible.
 //
-// Lerp rates:
-//   rising          0.025 — slow fade-in; the aurora materialises gently
-//   fading          0.018 — very slow fade-out; ghosting lingers as a visual echo
-//   active/demoting 0.035 — moderate; tracks opacity changes without snapping
+// Lerp rates are scaled by getAnimationSpeedFactor() so animation speed
+// feels connected to the music's tempo — faster music produces snappier
+// transitions, slower music produces more atmospheric ones.
+//
+// Base rates are tuned for 100 BPM (speed factor ≈ 0.87):
+//   Glow stick — snappier base rates; tempo feels immediate
+//   Aurora     — slower base rates; tempo feels atmospheric
 // ================================
 
 export function updateRibbonOpacities() {
+  const speed = getAnimationSpeedFactor();
+
+  // BPM-scaled lerp rates per mode and state.
+  // Min/max clamps keep rates in a safe perceptible range regardless of BPM.
+  const RATES = {
+    glowstick: {
+      rising:  Math.min(0.28, Math.max(0.06,  0.15  * speed)),
+      fading:  Math.min(0.09, Math.max(0.018, 0.045 * speed)),
+      active:  Math.min(0.12, Math.max(0.03,  0.06  * speed)),
+    },
+    aurora: {
+      rising:  Math.min(0.05, Math.max(0.012, 0.025 * speed)),
+      fading:  Math.min(0.04, Math.max(0.008, 0.018 * speed)),
+      active:  Math.min(0.06, Math.max(0.015, 0.035 * speed)),
+    },
+  };
+
+  const mode = renderMode === 'glowstick' ? 'glowstick' : 'aurora';
+
   ribbons.forEach(r => {
-    const rate = r.state === 'rising'  ? 0.025
-               : r.state === 'fading'  ? 0.018
-               :                         0.035;   // 'active' | 'demoting'
+    let rate;
+    switch (r.state) {
+      case 'rising':   rate = RATES[mode].rising; break;
+      case 'fading':   rate = RATES[mode].fading; break;
+      case 'demoting': rate = RATES[mode].fading; break;
+      default:         rate = RATES[mode].active; break;
+    }
 
     r.opacity = lerp(r.opacity, r.targetOpacity, rate);
 
@@ -644,15 +692,21 @@ export function updateRibbonOpacities() {
     r.hsl = getProfileColor(r.pitchClass);
 
     // Advance the state machine once the opacity transition is complete.
-    if (r.state === 'rising' && Math.abs(r.opacity - r.targetOpacity) < 0.01) {
+    if (r.state === 'rising' && Math.abs(r.opacity - r.targetOpacity) < 0.02) {
       r.state   = 'active';
       r.opacity = r.targetOpacity;   // snap to exact value — prevent endless lerp
     }
-    if (r.state === 'fading' && r.opacity < 0.005) {
+    if (r.state === 'fading' && r.opacity < 0.01) {
       r.state   = 'dead';
       r.opacity = 0;
     }
   });
+
+  // Prune dead ribbons immediately so they don't linger until the next
+  // lifecycle call. Reverse iteration avoids index shifting on splice.
+  for (let i = ribbons.length - 1; i >= 0; i--) {
+    if (ribbons[i].state === 'dead') ribbons.splice(i, 1);
+  }
 }
 
 

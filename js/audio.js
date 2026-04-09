@@ -129,6 +129,21 @@ const ONSET_COOLDOWN_MS = 100;
 // 0.88 means intensity halves in roughly 5 frames (~83ms at 60fps).
 const ONSET_DECAY = 0.88;
 
+// ─── BPM Estimation ───────────────────────────────────────────────────────
+// Estimates tempo from onset density using a rolling buffer of onset
+// timestamps. Inter-onset interval average → BPM estimate.
+// Smoothed with a slow lerp to prevent jumpy tempo readings.
+
+const ONSET_TIMESTAMP_BUFFER_SIZE = 8;   // last N onsets used for averaging
+const BPM_LERP_RATE  = 0.04;             // slow lerp — tempo feels stable
+const BPM_MIN        = 60;               // clamp floor — handles silence
+const BPM_MAX        = 180;              // clamp ceiling — handles very fast music
+const BPM_DEFAULT    = 100;              // starting value before enough onsets
+
+let onsetTimestamps = [];                // rolling buffer of onset times (ms)
+let estimatedBPM    = BPM_DEFAULT;       // current smoothed BPM estimate
+let rawBPM          = BPM_DEFAULT;       // unsmoothed BPM before lerp
+
 // Idle fallback values used when no audio is playing.
 // Non-zero so the aurora continues its ambient animation (not frozen).
 const IDLE_AUDIO_DATA = {
@@ -335,6 +350,9 @@ export function resetAudioState() {
   if (previousFreqData) previousFreqData.fill(0);   // zero flux baseline
   fluxHistory.length = 0;            // clear rolling flux history
   beatIntensityInternal = 0;         // no beat intensity carried over
+  onsetTimestamps.length = 0;        // clear BPM onset history
+  estimatedBPM = BPM_DEFAULT;        // reset to neutral starting BPM
+  rawBPM       = BPM_DEFAULT;
 }
 
 
@@ -447,6 +465,52 @@ function detectOnset(currentFreqData) {
 }
 
 
+// ─── updateBPMEstimate ────────────────────────────────────────────────────
+// Called on every detected onset. Pushes the onset timestamp into a rolling
+// buffer, computes the average inter-onset interval, converts to BPM, and
+// lerps the result smoothly.
+//
+// Uses onset density rather than strict beat tracking — this means the BPM
+// reflects musical activity density, which feels natural for visualization:
+// dense passages animate faster, sparse ones slower.
+// ─────────────────────────────────────────────────────────────────────────
+
+function updateBPMEstimate() {
+  const now = performance.now();
+  onsetTimestamps.push(now);
+
+  // Keep buffer at max size — discard oldest.
+  if (onsetTimestamps.length > ONSET_TIMESTAMP_BUFFER_SIZE) {
+    onsetTimestamps.shift();
+  }
+
+  // Need at least 2 timestamps to compute an interval.
+  if (onsetTimestamps.length < 2) return;
+
+  // Average gap between consecutive onsets.
+  let totalGap = 0;
+  for (let i = 1; i < onsetTimestamps.length; i++) {
+    totalGap += onsetTimestamps[i] - onsetTimestamps[i - 1];
+  }
+  const avgGapMs = totalGap / (onsetTimestamps.length - 1);
+
+  // Convert to BPM and clamp to musical range.
+  rawBPM = Math.min(BPM_MAX, Math.max(BPM_MIN, 60000 / avgGapMs));
+
+  // Lerp toward raw estimate — prevents jumpy tempo readings.
+  estimatedBPM = estimatedBPM + (rawBPM - estimatedBPM) * BPM_LERP_RATE;
+}
+
+
+// ─── getBPM ───────────────────────────────────────────────────────────────
+// Getter for the current smoothed BPM estimate.
+// estimatedBPM is a module-level let — exporting via a getter function
+// ensures callers always read the latest value.
+// ─────────────────────────────────────────────────────────────────────────
+
+export function getBPM() { return estimatedBPM; }
+
+
 // ================================
 // AUDIO ANALYSIS — UPDATE (called every frame from drawFrame)
 //
@@ -534,6 +598,9 @@ export function updateAudioData() {
   // Still reads from freqData directly; Meyda cannot provide this because
   // onset detection requires per-render-frame snapshots, not buffer-rate callbacks.
   const { isBeat, beatIntensity } = detectOnset(freqData);
+
+  // Update BPM estimate on every detected onset.
+  if (isBeat) updateBPMEstimate();
 
   // --- DEBUG: throttled console logging (once per second) ---
   // Remove this entire block before the next milestone.
