@@ -12,22 +12,50 @@
 // In Milestone 4 this will be swapped live via a profile switcher UI.
 // =============================================================================
 
-import { RIMSKY_KORSAKOV_PROFILE } from '../profiles/rimsky-korsakov.js';
+import { RIMSKY_KORSAKOV_PROFILE }  from '../profiles/rimsky-korsakov.js';
+import { PHARRELL_WILLIAMS_PROFILE } from '../profiles/pharrell-williams.js';
 import { audioData } from './audio.js';
+
+
+// ================================
+// PROFILES REGISTRY
+//
+// All available synesthete profiles in display order. ui.js reads this array
+// to render the profile selector buttons in the settings sidebar dynamically —
+// adding a new profile only requires importing it above and adding it here.
+// ================================
+
+export const PROFILES = [
+  RIMSKY_KORSAKOV_PROFILE,
+  PHARRELL_WILLIAMS_PROFILE,
+];
 
 
 // ================================
 // ACTIVE PROFILE
 //
 // The active synesthete profile maps pitch class indices (0–11) to HSL colors.
-// RIMSKY_KORSAKOV_PROFILE is imported directly from its ES module.
-// All color lookups go through getProfileColor(), which applies the full
-// modulation pipeline on top of the base color.
-//
-// In Milestone 4 this will be swapped live via a profile switcher UI.
+// Defaults to the first profile in the registry on load.
+// All color lookups go through getProfileColor() / getAuroraColor(), which
+// apply the full modulation pipeline on top of the base profile color.
 // ================================
 
-export let activeProfile = RIMSKY_KORSAKOV_PROFILE;
+export let activeProfile = PROFILES[0];
+
+
+// ================================
+// PROFILE SWITCHER
+//
+// Called by ui.js when the user selects a different profile in the sidebar.
+// Falls back to PROFILES[0] if index is out of range.
+//
+// Parameters:
+//   index — integer; index into the PROFILES registry array
+// ================================
+
+export function setActiveProfile(index) {
+  activeProfile = PROFILES[index] ?? PROFILES[0];
+}
 
 
 // ================================

@@ -17,6 +17,9 @@
 // =============================================================================
 
 
+import { PROFILES, setActiveProfile } from './profiles.js';
+
+
 // ================================
 // EXPORTED STATE
 // ================================
@@ -38,7 +41,9 @@ const settingsBtn     = document.getElementById('settings-btn');
 const settingsSidebar = document.getElementById('settings-sidebar');
 const settingsClose   = document.getElementById('settings-close');
 const noteNamesToggle = document.getElementById('note-names-toggle');
-const pillBtns        = document.querySelectorAll('.settings-pill');
+// Scoped to .settings-pill-group so profile pills (in #profile-list) are not
+// caught by the mode-switch handler that iterates over pillBtns below.
+const pillBtns        = document.querySelectorAll('.settings-pill-group .settings-pill');
 
 
 // ================================
@@ -114,6 +119,36 @@ pillBtns.forEach(btn => {
     applyRenderMode(renderMode);
   });
 });
+
+
+// ================================
+// PROFILE SWITCHER
+//
+// Buttons are created from the PROFILES registry so no HTML changes are needed
+// when new profiles are added — only profiles.js needs updating.
+//
+// Profile pills live inside #profile-list (not .settings-pill-group) so they
+// are not picked up by the mode-switch pillBtns handler above.
+// ================================
+
+function renderProfileButtons() {
+  const list = document.getElementById('profile-list');
+  PROFILES.forEach((profile, index) => {
+    const btn = document.createElement('button');
+    btn.className = 'settings-pill' + (index === 0 ? ' active' : '');
+    btn.dataset.profileIndex = index;
+    btn.textContent = profile.name;
+    btn.addEventListener('click', () => {
+      setActiveProfile(index);
+      document.querySelectorAll('#profile-list .settings-pill')
+        .forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+    list.appendChild(btn);
+  });
+}
+
+renderProfileButtons();
 
 
 // ================================
