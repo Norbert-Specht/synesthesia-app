@@ -1,281 +1,210 @@
 # 🎨 Synesthesia App
 
-> A real-time music visualizer that translates sound into color — the way synesthetes experience it.
+> A real-time music visualizer that translates sound into color — the way people with chromesthesia experience music.
+
+[![Status](https://img.shields.io/badge/status-active%20development-blue)]()
+[![Stack](https://img.shields.io/badge/stack-vanilla%20JS-yellow)]()
+[![License](https://img.shields.io/badge/license-MIT-green)]()
 
 ---
 
-## What This Project Is
+## What It Is
 
-The Synesthesia App analyzes music in real-time while it plays and generates a dynamic color display inspired by **chromesthesia** — the neurological phenomenon where sound involuntarily triggers color perception.
+The Synesthesia App listens to music in real-time and generates a dynamic visual display based on **chromesthesia** — the neurological phenomenon where sound involuntarily triggers color perception. Roughly 4% of the population experiences this, including musicians like Pharrell Williams, Rimsky-Korsakov, and Billy Joel.
 
-Built as a learning project in collaboration with Claude (Anthropic), exploring both the science of synesthesia and professional web development workflows.
+The app extracts the dominant pitch from the music each frame, maps it to a color using a documented synesthete's color palette, and renders it as an animated full-screen visualization. The result is a window into how synesthetes literally experience music — not a generic equalizer or beat visualizer, but a scientifically grounded pitch-to-color translation.
+
+**Built in collaboration with Claude (Anthropic)** as both a creative project and a learning exercise in LLM-assisted development.
 
 ---
 
-## The Two Goals
+## Two Visualization Modes
 
-1. **Build a beautiful, science-informed music-to-color visualizer** that lets anyone experience what it might feel like to "see" music the way synesthetes do.
-2. **Learn to build and ship real projects** using LLM-assisted development, GitHub, and modern deployment pipelines.
+Switch between modes via the settings panel (gear icon, top right).
+
+### 🌌 Aurora Mode
+
+Vertical curtains of light rising from the bottom of the screen, inspired by the northern lights. Each ribbon represents an active pitch class. The dominant pitch spawns a primary ribbon. Secondary pitches spawn subordinate ribbons alongside it.
+
+The aurora uses a **two-canvas bristle system**:
+- Each ribbon is rendered as 9 individual bristles — think of how an aurora curtain is made of many individual magnetic field lines, each slightly different
+- A blurred canvas handles the soft atmospheric glow (CSS `filter: blur`)
+- A sharp canvas handles the bright hot cores on top
+- Ribbon width breathes with amplitude — loud passages fan dramatically wide, quiet moments narrow to near-invisible threads
+
+### ⚡ Glow Mode
+
+Straight vertical neon tubes — think neon billboard lights. Each pitch class becomes a thin intensely bright line with a vivid color glow that radiates outward. The dominant pitch gets the thickest brightest tube. Secondary and tertiary pitches spawn as clusters with satellite tubes at irregular spacings, mirroring how chord tones relate harmonically.
+
+---
+
+## The Science Behind It
+
+### Chromesthesia Research
+
+The color system is grounded in documented synesthetic research, not arbitrary color choices:
+
+- **Pitch drives hue** — every chromesthete maps pitch classes to colors. It's the universal foundation.
+- **Chords blend** — a chord produces a dominant color from the root note, with secondary notes subtly tinting the surrounding glow. Not one color per note — a blend with a clear dominant.
+- **Timbre modifies lightness and saturation** — not hue. The same note on a violin and a trumpet is the same color, just different brightness and vividness.
+- **Dynamics drive intensity** — louder passages produce more vivid, more saturated color. Quiet passages produce pale, delicate color.
+
+### How Pitch Detection Works
+
+```
+Audio file upload
+    → Web Audio API → AnalyserNode
+    → Meyda.js (parallel tap)
+        → chroma[12]        — energy per pitch class (C through B)
+        → rms               — overall amplitude
+        → spectralCentroid  — timbre brightness proxy
+    → Spectral flux onset detection (independent)
+    → audioData object → visualization each frame
+```
+
+Meyda.js handles FFT windowing and overtone compensation — critical for accurate chroma extraction from polyphonic music. Hand-rolled chroma extraction was tried first and produced pitch class aliasing (one note always dominated regardless of the music). Meyda produces genuine chroma separation with 0.6+ spread on clear harmonic content.
+
+---
+
+## Synesthete Profiles
+
+Users choose *whose* synesthetic experience they're exploring. The profile determines the pitch-to-color mapping.
+
+### Currently Implemented
+
+**Nikolai Rimsky-Korsakov (1844–1908)**
+One of the most thoroughly documented synesthetic palettes in music history. The Russian composer mapped all 12 pitch classes to specific colors — C major as white, D major as golden yellow, E major as sapphire blue, and so on. His color associations directly influenced his orchestration choices.
+
+**Pharrell Williams (b. 1973)**
+The Grammy-winning producer maps the 7 musical notes to the 7 colors of the visible spectrum — red through violet — with sharps and flats interpolated between their neighbors. The most vivid and intuitive of the profiles.
+
+### Planned
+
+- Research theme presets (Warm Spectrum, Cool Spectrum, Classic/Neutral)
+- Custom profile builder — pick 3 colors, app interpolates the full 12-note palette
 
 ---
 
 ## Tech Stack
 
-- **HTML / CSS / JavaScript** — vanilla, no framework
+- **HTML / CSS / JavaScript** — vanilla, no framework, no build tool
 - **Web Audio API** — real-time audio pipeline
-- **Meyda.js** — chroma feature extraction, RMS amplitude, spectral centroid
-- **Canvas API** — animated visualization (two render modes)
-- **GitHub** — version control
-- **Vercel or Netlify** — deployment (TBD)
+- **Meyda.js** — chroma feature extraction, RMS, spectral centroid
+- **Canvas API** — two-canvas aurora rendering, glow stick rendering
+- **ES Modules** — modular JS architecture, 6 focused files
 
----
-
-## Synesthesia Research Foundation
-
-### What is Chromesthesia?
-
-Chromesthesia is a form of synesthesia where auditory stimuli — notes, chords, keys, timbres, rhythms — automatically and involuntarily trigger color perception. It affects roughly 4% of the population.
-
-- Colors are **consistent over time** for each individual
-- The experience is **involuntary** — cannot be switched off
-- Colors appear **projected in space** ("projectors") or in the mind's eye ("associators")
-
-### Key Research Findings
-
-**On polyphonic music and chords:**
-Chords produce a dominant color from the root/most prominent note, with secondary notes adding nuance and tint. The experience blends — dominant pitch wins the hue, secondary pitches subtly shift it.
-
-**On timbre:**
-Timbre-color synesthesia affects roughly 26% of chromesthetes. For those who experience it, timbre modifies lightness and saturation — not hue. Higher pitch registers produce lighter, less saturated colors.
-
-**On pitch as the universal foundation:**
-Every form of chromesthesia involves pitch → color. Pitch drives hue universally. Timbre and dynamics modify it.
-
-### Key Perceptual Mappings
-
-| Audio Feature | Visual Property | Notes |
-|---|---|---|
-| **Dominant pitch class** | Hue | Primary driver — profile lookup |
-| **Secondary pitch classes** | Hue blend in glow | Nuance without overriding dominant |
-| **Timbre** | Lightness + saturation shift | How the color looks, not which color |
-| **Amplitude / dynamics** | Saturation + ribbon intensity | Louder = more vivid |
-| **Pitch register (octave)** | Lightness | Higher = lighter shade |
-| **Onset** | Brightness pulse / flare | Sharp spike, decays quickly |
-
----
-
-## Visualization — Two Render Modes
-
-The app offers two distinct visualization modes switchable via a pill UI in the top right corner. Both modes share the same audio analysis pipeline and pitch-to-color profile system.
-
-### Why Two Modes Exist
-
-During Milestone 3 development, Canvas 2D aurora rendering was found to have a fundamental ceiling — achieving the luminous, soft, atmospheric quality of real aurora photography requires either WebGL shaders or CSS blur filters, both of which carry significant complexity or performance trade-offs. Rather than compromise the visual quality of the aurora concept, a second mode was developed that plays to Canvas 2D's strengths.
-
----
-
-### Mode A — Aurora
-
-**Concept:** Full-screen aurora borealis. Vertical ribbon curtains of light rising from the bottom edge of the screen, driven by pitch content.
-
-**Visual anatomy:**
-- Wide atmospheric haze polygon (outermost layer)
-- Main glow body polygon (mid layer)
-- Bright solid core polygon (innermost)
-- All rendered with `source-over` compositing and transparent HSL fills
-
-**Known limitation:** Canvas 2D cannot fully replicate the soft luminous diffusion of real aurora. Maximum achievable quality is estimated at 50–60% of photographic reference. Full quality requires WebGL fragment shaders — planned as a future upgrade.
-
-**Ribbon lifecycle:**
-- Ribbons are born, promoted, demoted, and retired as pitch content changes
-- New dominant pitch → new primary ribbon rises from bottom
-- Previous primary demotes to secondary, old secondaries fade out
-- Maximum 3 ribbons simultaneously
-
----
-
-### Mode B — Glow Sticks
-
-**Concept:** Neon glow sticks — thin, intensely hot vertical lines with a wide vivid blur chasing the core. Inspired by the diagnostic ribbon test that revealed Canvas 2D excels at this style of rendering.
-
-**Why this works better in Canvas 2D:**
-The glow stick aesthetic plays directly to Canvas 2D polygon rendering strengths — a sharp high-contrast core with wide transparent gradients produces genuine luminosity without needing blur filters or WebGL.
-
-**Visual anatomy:**
-- Wide outer glow polygon (wide chasing blur — the "catch up" effect)
-- Inner intense glow polygon
-- Near-white hot core polygon (pure white at hottest point)
-- Onset flare: core briefly surges toward pure white on musical attacks
-
-**Ribbon pool — cluster system:**
-
-| Pitch role | Visual type | Count | Thickness |
-|---|---|---|---|
-| Dominant pitch | Solo individual | 1 | Thickest (1.0×) |
-| Secondary pitches | Option C cluster | 2–3 each | Medium (0.68× center, 0.45×/0.35× satellites |
-| Tertiary pitches (chroma > 0.35) | Solo individual | 1–2 | Thinnest (0.38×) |
-| **Total maximum** | | **9** | |
-
-**Option C cluster spacing:**
-Each secondary pitch spawns one center stick + two satellites. One satellite is tight (2.8–5.5% screen width offset), one is loose (7–13% offset). This makes clusters feel organic rather than mechanical, and mirrors how chord notes have a root with surrounding tones at irregular harmonic distances.
-
-**Timing:**
-- Appear: lerp rate `0.15` — fast, snappy, energetic
-- Fade: lerp rate `0.022` — slow linger, glow chases the fading core
-
----
-
-## Profile System
-
-Users choose *whose* synesthetic experience to explore.
-
-### 🎼 Famous Synesthete Profiles
-- **Nikolai Rimsky-Korsakov** — first profile implemented. Most documented synesthetic palette in music history. 12 pitch classes mapped to HSL colors.
-- **Franz Liszt** — planned Milestone 4
-- **Pharrell Williams** — planned Milestone 4
-
-### 🔬 Research Themes
-Warm Spectrum, Cool Spectrum, Classic/Neutral — planned Milestone 4
-
-### ✏️ Custom Profiles
-3-input mood picker interpolates full 12 pitch class palette — planned Milestone 5
-
----
-
-## Audio Analysis
-
-### Why Meyda.js
-
-Hand-rolled FFT chroma extraction produced pitch class aliasing — C# dominated almost every frame regardless of musical content, because some pitch classes receive more FFT bins than others at common sample rates. Meyda.js handles FFT windowing, normalization, and overtone compensation correctly, producing genuine chroma separation (spread 0.6+ on clear harmonic content vs 0.2 previously).
-
-### Pipeline
-
-```
-<audio> element
-    → MediaElementSourceNode
-    → AnalyserNode (fftSize 2048, smoothing 0.3)
-    → AudioContext.destination
-
-Meyda analyzer (parallel tap on sourceNode):
-    → chroma[12]          — pitch class energies, smoothed via lerp
-    → rms                 — amplitude
-    → spectralCentroid    — timbre brightness proxy
-
-AnalyserNode (direct):
-    → spectral flux onset detection (kept independent of Meyda)
-
-Combined → audioData object → visualization each frame
-```
-
-See `docs/audio-analysis.md` for full detail.
-
----
-
-## Feature Roadmap
-
-### Milestone 1 — Foundation ✅
-- [x] Project structure, GitHub, audio upload, playback
-- [x] Canvas aurora with ambient animation
-
-### Milestone 2 — Audio Analysis ✅
-- [x] Web Audio API, Meyda.js chroma extraction
-- [x] RMS amplitude, spectral brightness
-- [x] Spectral flux onset detection
-- [x] `audioData` object each frame
-
-### Milestone 3 — Pitch-to-Color + Visualization 🔲
-- [x] Rimsky-Korsakov profile (`profiles/rimsky-korsakov.js`)
-- [x] Dynamic ribbon pool — born, promoted, demoted, faded
-- [x] Polygon-based rendering (replaced circle-based)
-- [x] Vertical ribbon geometry
-- [x] Progress bar with scrubbing and time display
-- [x] Aurora / Glow mode switch UI (pill, top right)
-- [ ] Glow stick cluster pool (`updateGlowstickLifecycle()`)
-- [ ] Glow stick rendering (`drawRibbonGlowstick()`)
-- [ ] Visual tuning pass — both modes
-
-### Milestone 4 — Profile System UI 🔲
-- [ ] Profile switcher UI, cross-fade between profiles
-- [ ] Liszt and Pharrell Williams profiles
-- [ ] Research theme presets
-
-### Milestone 5 — Custom Profiles & Polish 🔲
-- [ ] Custom profile builder (3-input mood picker)
-- [ ] localStorage persistence
-- [ ] Responsive design, reduced-motion accessibility
-
-### Milestone 6 — Deployment 🔲
-- [ ] Vercel or Netlify
-- [ ] Spotify API integration (stretch goal)
-- [ ] WebGL aurora rendering upgrade (stretch goal)
-
----
-
-## Project Structure
+### Project Structure
 
 ```
 synesthesia-app/
-├── README.md
-├── CLAUDE.md
 ├── index.html
 ├── css/
 │   └── style.css
 ├── js/
-│   └── main.js
+│   ├── main.js         ← entry point, render loop
+│   ├── audio.js        ← Web Audio API, Meyda, chroma, onset detection
+│   ├── renderer.js     ← aurora bristles, glow sticks, background, labels
+│   ├── ribbons.js      ← ribbon pool, lifecycle, cluster spawning, BPM
+│   ├── profiles.js     ← profile system, color pipeline
+│   ├── player.js       ← upload, playback, progress bar
+│   └── ui.js           ← settings sidebar, render mode, note names toggle
 ├── profiles/
-│   └── rimsky-korsakov.js
-├── assets/
-│   └── audio/
+│   ├── rimsky-korsakov.js
+│   └── pharrell-williams.js
 └── docs/
-    ├── research.md
-    ├── visual-design.md
-    ├── audio-analysis.md
-    └── future-ideas.md
+    ├── decision-log.md     ← full history of decisions and rationale
+    ├── visual-design.md    ← visual architecture documentation
+    ├── audio-analysis.md   ← audio pipeline documentation
+    └── research.md         ← synesthesia research notes
 ```
 
 ---
 
-## Open Design Questions
+## Current Status
 
-| Question | Status | Decision |
-|---|---|---|
-| Whose synesthesia? | ✅ Decided | Famous profiles + Research themes + Custom |
-| Visualization modes | ✅ Decided | Aurora + Glow Sticks, user-switchable pill UI |
-| Aurora rendering approach | ✅ Decided | Canvas 2D polygons now, WebGL upgrade planned |
-| Glow stick cluster spacing | ✅ Decided | Option C — center + tight satellite + loose satellite |
-| Ribbon color model | ✅ Decided | Option B + Option D |
-| Ribbon lifecycle | ✅ Decided | Dynamic — born, promoted, demoted, faded |
-| Onset detection | ✅ Decided | Spectral flux via Meyda + independent AnalyserNode |
-| Chroma extraction | ✅ Decided | Meyda.js — hand-rolled had pitch class aliasing |
-| Polyphonic color | ✅ Decided | Dominant pitch wins hue, secondary pitches tint glow |
-| Timbre role | ✅ Decided | Lightness + saturation only, not hue |
-| Custom profile complexity | ✅ Decided | 3 inputs, app interpolates rest |
-| WebGL aurora upgrade | 🔲 Open | Stretch goal — after deployment |
-| Dynamics → ribbon origin | 🔲 Open | Implemented, needs tuning |
-| Mobile layout | 🔲 Open | TBD Milestone 5 |
-| Epilepsy / reduced-motion | 🔲 Open | Planned Milestone 5 |
-| Spotify integration | 🔲 Open | Stretch goal |
-| Mode switch as permanent feature | 🔲 Open | Pill UI for now, may redesign |
+### ✅ Complete
+
+**Milestone 1 — Foundation**
+Audio file upload, playback controls, progress bar with scrubbing, time display, full-screen canvas, ambient aurora animation.
+
+**Milestone 2 — Audio Analysis**
+Meyda.js chroma extraction (12 pitch class energies per frame), RMS amplitude, spectral brightness, spectral flux onset detection (genre-agnostic — works on classical, jazz, electronic, acoustic), BPM estimation from onset density.
+
+**Milestone 3 — Visualization**
+Both render modes fully working. Dynamic ribbon lifecycle (pitch-driven, born/promoted/demoted/faded). Aurora two-canvas bristle system. Glow stick cluster system. Settings sidebar with mode switch and note names toggle. BPM-driven animation speed (faster music = faster transitions). Both Rimsky-Korsakov and Pharrell Williams profiles implemented.
+
+### 🔄 In Progress
+
+**Milestone 3b — Aurora Visual Refinement**
+The two-canvas bristle system is working. Ongoing tuning of bristle count, glow falloff, and color vibrancy.
+
+### 🔲 Planned
+
+**Milestone 4 — Profile System UI**
+Profile switcher in settings sidebar. Cross-fade between profiles. Research theme presets.
+
+**Milestone 5 — Custom Profiles & Polish**
+3-input mood-based profile builder. localStorage persistence. Responsive design. Reduced-motion accessibility.
+
+**Milestone 6 — Deployment & Streaming**
+Vercel deployment. Research into streaming service integration (SoundCloud API is the most promising candidate — Spotify's DRM blocks Web Audio API access to the audio stream).
+
+### 🔭 Stretch Goals
+- WebGL aurora rendering — Canvas 2D has a quality ceiling (~60% of photographic aurora quality). WebGL fragment shaders would produce genuine soft luminous diffusion.
+- Spotify integration — technically constrained by DRM but metadata (BPM, key) could drive animation even without audio stream access.
 
 ---
 
-## How to Use This README With Claude
+## UI Features
 
-> *"Here's my project README: [paste]. We're on Milestone [X]. Last session we completed [Y]. Today I want to work on [Z]."*
+- **Settings sidebar** — gear icon top right, slides in from right
+- **Mode switch** — Aurora / Glow, switchable anytime during playback
+- **Note names toggle** — shows pitch class label (C, C#, D...) on each ribbon/stick — useful for verifying pitch detection
+- **Progress bar** — click to seek, drag to scrub
+- **Time display** — elapsed / total in m:ss format
+- **Track name display** — filename shown in controls bar
 
-Claude has no memory between conversations — this README is Claude's briefing document.
+---
+
+## Running Locally
+
+No build step needed — just open `index.html` in a browser.
+
+```bash
+git clone https://github.com/Norbert-Specht/synesthesia-app.git
+cd synesthesia-app
+open index.html
+```
+
+Or serve it locally to avoid any ES module CORS issues:
+
+```bash
+npx serve .
+# then open http://localhost:3000
+```
+
+---
+
+## Development Notes
+
+This project was built entirely through **LLM-assisted development** using Claude (Anthropic). The workflow:
+- Planning, research, and architecture decisions in Claude.ai chat
+- Implementation via Claude Code (terminal-based coding agent)
+- All significant decisions documented in `docs/decision-log.md`
+
+The decision log captures not just *what* was decided but *why* — including dead ends, mistakes, and the reasoning behind pivots. It's a useful read for anyone interested in how LLM-assisted development actually unfolds on a real project.
 
 ---
 
 ## References
 
 - Cytowic, R.E. — *Synesthesia: A Union of the Senses* (2002)
-- Ward, J. & Eagleman, D. — synesthetic color associations and pitch
-- Niccolai et al. (2012) — Timbre-color synesthesia prevalence (26%)
-- Frontiers in Psychology (2025) — Timbre-color with morphed instrument timbres
-- The Synesthesia Tree — chord-color and tone-color documentation
+- Ward, J. & Eagleman, D. — research on synesthetic color associations and pitch
+- Niccolai et al. (2012) — timbre-color synesthesia prevalence (26% of chromesthetes)
+- Frontiers in Psychology (2025) — timbre-color synesthesia with morphed instrument timbres
+- The Synesthesia Tree — documented chord-color and tone-color synesthetic experiences
 - [Wikipedia: Chromesthesia](https://en.wikipedia.org/wiki/Chromesthesia)
 
 ---
 
-*Built in collaboration with Claude (Anthropic) as both a creative and educational endeavor.*
+*Built in collaboration with Claude (Anthropic) · Vanilla JS · No framework · No build tool*
